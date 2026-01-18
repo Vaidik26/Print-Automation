@@ -166,6 +166,25 @@ st.markdown(
         border-radius: 8px;
     }
     
+    /* Navigation buttons container */
+    .nav-buttons {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 2rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    /* Back button styling */
+    div[data-testid="column"]:first-child .stButton > button {
+        background: linear-gradient(90deg, #6c757d 0%, #495057 100%);
+    }
+    
+    /* Next button styling - green gradient */
+    div[data-testid="column"]:last-child .stButton > button {
+        background: linear-gradient(90deg, #2ed573 0%, #1abc9c 100%);
+    }
+    
     /* Step indicator */
     .step-indicator {
         display: flex;
@@ -226,6 +245,48 @@ def init_session_state():
         st.session_state.generated_docs = None
     if "step" not in st.session_state:
         st.session_state.step = 1
+    if "current_tab" not in st.session_state:
+        st.session_state.current_tab = 0
+
+
+def go_to_tab(tab_index):
+    """Navigate to a specific tab."""
+    st.session_state.current_tab = tab_index
+
+
+def render_nav_buttons(
+    current_tab,
+    can_proceed=True,
+    show_back=True,
+    show_next=True,
+    next_label="Next Step ➡️",
+):
+    """Render navigation buttons at the bottom of each section."""
+    st.markdown("---")
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+
+    with col1:
+        if show_back and current_tab > 0:
+            if st.button("⬅️ Back", key=f"back_{current_tab}", use_container_width=True):
+                go_to_tab(current_tab - 1)
+                st.rerun()
+
+    with col3:
+        if show_next and current_tab < 3:
+            if can_proceed:
+                if st.button(
+                    next_label, key=f"next_{current_tab}", use_container_width=True
+                ):
+                    go_to_tab(current_tab + 1)
+                    st.rerun()
+            else:
+                st.button(
+                    next_label,
+                    key=f"next_{current_tab}",
+                    use_container_width=True,
+                    disabled=True,
+                )
 
 
 def render_header():
@@ -286,6 +347,8 @@ def render_template_upload():
         help="Upload a .docx file with {placeholder} markers",
     )
 
+    can_proceed = False
+
     if template_file:
         try:
             template_bytes = template_file.read()
@@ -317,6 +380,7 @@ def render_template_upload():
                 )
 
                 st.session_state.step = max(st.session_state.step, 2)
+                can_proceed = True
             else:
                 st.warning(
                     "⚠️ No placeholders found in the template. Make sure to use {column_name} format."
@@ -326,11 +390,19 @@ def render_template_upload():
             st.error(f"❌ Error loading template: {str(e)}")
             st.session_state.template_processor = None
 
+    # Navigation buttons
+    render_nav_buttons(
+        0, can_proceed=can_proceed, show_back=False, next_label="Next: Upload Data ➡️"
+    )
+
 
 def render_data_upload():
     """Render data file upload section."""
     if st.session_state.template_processor is None:
-        st.info("👆 Please upload a template first")
+        st.info(
+            "👆 Please upload a template first. Click 'Back' to go to the previous step."
+        )
+        render_nav_buttons(1, can_proceed=False, show_next=False)
         return
 
     st.markdown("### 📊 Step 2: Upload Data File")
@@ -351,6 +423,8 @@ def render_data_upload():
         type=["csv", "xlsx", "xls"],
         help="Upload CSV or Excel file with your data",
     )
+
+    can_proceed = False
 
     if data_file:
         try:
@@ -378,10 +452,14 @@ def render_data_upload():
                 st.dataframe(handler.get_preview(), use_container_width=True)
 
             st.session_state.step = max(st.session_state.step, 3)
+            can_proceed = True
 
         except Exception as e:
             st.error(f"❌ Error loading data: {str(e)}")
             st.session_state.data_handler = None
+
+    # Navigation buttons
+    render_nav_buttons(1, can_proceed=can_proceed, next_label="Next: Map Columns ➡️")
 
 
 def render_column_mapping():
@@ -390,7 +468,10 @@ def render_column_mapping():
         st.session_state.template_processor is None
         or st.session_state.data_handler is None
     ):
-        st.info("👆 Please complete the previous steps first")
+        st.info(
+            "👆 Please complete the previous steps first. Click 'Back' to go to the previous step."
+        )
+        render_nav_buttons(2, can_proceed=False, show_next=False)
         return
 
     st.markdown("### 🔗 Step 3: Map Columns to Placeholders")
@@ -462,6 +543,7 @@ def render_column_mapping():
 
     # Validation
     unmapped = [p for p in placeholders if p not in mapping]
+    can_proceed = False
     if unmapped:
         st.warning(
             f"⚠️ Unmapped placeholders: {', '.join(['{' + p + '}' for p in unmapped])}"
@@ -469,6 +551,7 @@ def render_column_mapping():
     else:
         st.success("✅ All placeholders mapped!")
         st.session_state.step = max(st.session_state.step, 4)
+        can_proceed = True
 
     # Filename column selection
     st.markdown("---")
@@ -484,11 +567,17 @@ def render_column_mapping():
         None if filename_col.startswith("Auto") else filename_col
     )
 
+    # Navigation buttons
+    render_nav_buttons(2, can_proceed=can_proceed, next_label="Next: Generate ➡️")
+
 
 def render_generate_section():
     """Render document generation section."""
     if st.session_state.step < 4:
-        st.info("👆 Please complete the column mapping first")
+        st.info(
+            "👆 Please complete the column mapping first. Click 'Back' to go to the previous step."
+        )
+        render_nav_buttons(3, can_proceed=False, show_next=False)
         return
 
     st.markdown("### 🚀 Step 4: Generate Documents")
@@ -612,6 +701,9 @@ def render_generate_section():
                     f"Showing first 20 of {len(documents)} documents. Download ZIP for all."
                 )
 
+    # Navigation buttons (back only on generate page)
+    render_nav_buttons(3, can_proceed=False, show_next=False)
+
 
 def render_sidebar():
     """Render the sidebar with instructions and info."""
@@ -670,21 +762,48 @@ def main():
     render_header()
     render_sidebar()
 
-    # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["📝 Template", "📊 Data", "🔗 Mapping", "🚀 Generate"]
-    )
+    # Tab names for navigation
+    tab_names = ["📝 Template", "📊 Data", "🔗 Mapping", "🚀 Generate"]
 
-    with tab1:
+    # Create clickable step indicators - all as buttons for consistent UI
+    cols = st.columns(4)
+    for i, (col, name) in enumerate(zip(cols, tab_names)):
+        with col:
+            # Determine button style based on current tab
+            is_current = st.session_state.current_tab == i
+            is_completed = st.session_state.step > i + 1
+
+            if is_current:
+                # Current tab - show as active button (clicking does nothing as we're already here)
+                st.button(
+                    f"● {name}",
+                    key=f"tab_btn_{i}",
+                    use_container_width=True,
+                    type="primary",
+                )
+            elif is_completed:
+                if st.button(
+                    f"✅ {name}", key=f"tab_btn_{i}", use_container_width=True
+                ):
+                    go_to_tab(i)
+                    st.rerun()
+            else:
+                if st.button(name, key=f"tab_btn_{i}", use_container_width=True):
+                    go_to_tab(i)
+                    st.rerun()
+
+    st.markdown("---")
+
+    # Render current tab content
+    current_tab = st.session_state.current_tab
+
+    if current_tab == 0:
         render_template_upload()
-
-    with tab2:
+    elif current_tab == 1:
         render_data_upload()
-
-    with tab3:
+    elif current_tab == 2:
         render_column_mapping()
-
-    with tab4:
+    elif current_tab == 3:
         render_generate_section()
 
 
