@@ -553,19 +553,143 @@ def render_column_mapping():
         st.session_state.step = max(st.session_state.step, 4)
         can_proceed = True
 
-    # Filename column selection
+    # Filename pattern builder
     st.markdown("---")
     st.markdown("**📁 Output Filename Settings**")
 
-    filename_col = st.selectbox(
-        "Select column for naming output files",
-        options=["Auto (document_001, document_002, ...)"] + columns,
-        help="Choose a column value to use as the filename for each generated document",
-    )
+    # Initialize filename pattern in session state
+    if "filename_pattern" not in st.session_state:
+        st.session_state.filename_pattern = []
+    if "filename_mode" not in st.session_state:
+        st.session_state.filename_mode = "auto"
 
-    st.session_state.filename_column = (
-        None if filename_col.startswith("Auto") else filename_col
+    # Mode selection
+    filename_mode = st.radio(
+        "Filename Mode",
+        options=["auto", "single", "pattern"],
+        format_func=lambda x: {
+            "auto": "🔢 Auto-numbered (document_001, document_002, ...)",
+            "single": "📄 Single column",
+            "pattern": "🎨 Custom pattern (multiple columns + separators)",
+        }[x],
+        horizontal=True,
+        key="filename_mode_radio",
     )
+    st.session_state.filename_mode = filename_mode
+
+    if filename_mode == "single":
+        # Simple single column selection
+        filename_col = st.selectbox(
+            "Select column for naming",
+            options=columns,
+            help="Choose a column value to use as the filename",
+            key="single_filename_col",
+        )
+        st.session_state.filename_column = filename_col
+        st.session_state.filename_pattern = []
+
+        # Preview
+        if st.session_state.data_handler:
+            preview_data = st.session_state.data_handler.get_preview(1)
+            if not preview_data.empty and filename_col in preview_data.columns:
+                sample_value = str(preview_data[filename_col].iloc[0])
+                st.markdown(f"**Preview:** `{sample_value}.docx`")
+
+    elif filename_mode == "pattern":
+        st.session_state.filename_column = None
+
+        st.markdown(
+            """
+        <div class="info-box">
+            <strong>Build your filename pattern:</strong> Add columns and separators in the order you want them to appear.
+            <br><br>
+            <strong>Example:</strong> <code>CustomerName</code> + <code>_</code> + <code>InvoiceNo</code> → <code>JohnDoe_INV001.docx</code>
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
+
+        # Pattern builder
+        col1, col2, col3 = st.columns([2, 1, 1])
+
+        with col1:
+            new_column = st.selectbox(
+                "Add Column",
+                options=["-- Select --"] + columns,
+                key="pattern_add_column",
+            )
+
+        with col2:
+            separator = st.text_input(
+                "Separator",
+                value="_",
+                max_chars=5,
+                help="Text between columns (e.g., _, -, ., space)",
+                key="pattern_separator",
+            )
+
+        with col3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("➕ Add to Pattern", key="add_to_pattern"):
+                if new_column != "-- Select --":
+                    # Add separator if pattern already has items
+                    if st.session_state.filename_pattern:
+                        st.session_state.filename_pattern.append(
+                            {"type": "separator", "value": separator}
+                        )
+                    st.session_state.filename_pattern.append(
+                        {"type": "column", "value": new_column}
+                    )
+                    st.rerun()
+
+        # Display current pattern
+        if st.session_state.filename_pattern:
+            st.markdown("**Current Pattern:**")
+
+            pattern_display = ""
+            pattern_tags = []
+            for item in st.session_state.filename_pattern:
+                if item["type"] == "column":
+                    pattern_tags.append(
+                        f'<span class="placeholder-tag">{{{item["value"]}}}</span>'
+                    )
+                    pattern_display += f"{{{item['value']}}}"
+                else:
+                    pattern_tags.append(
+                        f'<span style="color: #888; font-weight: bold;">{item["value"]}</span>'
+                    )
+                    pattern_display += item["value"]
+
+            st.markdown(" ".join(pattern_tags), unsafe_allow_html=True)
+
+            # Preview with actual data
+            if st.session_state.data_handler:
+                preview_data = st.session_state.data_handler.get_preview(1)
+                if not preview_data.empty:
+                    preview_filename = ""
+                    for item in st.session_state.filename_pattern:
+                        if (
+                            item["type"] == "column"
+                            and item["value"] in preview_data.columns
+                        ):
+                            preview_filename += str(preview_data[item["value"]].iloc[0])
+                        elif item["type"] == "separator":
+                            preview_filename += item["value"]
+                    st.markdown(f"**Preview:** `{preview_filename}.docx`")
+
+            # Clear pattern button
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if st.button("🗑️ Clear Pattern", key="clear_pattern"):
+                    st.session_state.filename_pattern = []
+                    st.rerun()
+        else:
+            st.info("👆 Add columns and separators to build your filename pattern")
+
+    else:  # auto mode
+        st.session_state.filename_column = None
+        st.session_state.filename_pattern = []
+        st.markdown("**Preview:** `document_0001.docx`, `document_0002.docx`, ...")
 
     # Navigation buttons
     render_nav_buttons(2, can_proceed=can_proceed, next_label="Next: Generate ➡️")
@@ -586,7 +710,23 @@ def render_generate_section():
     handler = st.session_state.data_handler
     mapping = st.session_state.column_mapping
 
-    # Summary
+    # Summary - determine filename mode description
+    filename_mode = st.session_state.get("filename_mode", "auto")
+    if filename_mode == "pattern" and st.session_state.get("filename_pattern"):
+        pattern_desc = " + ".join(
+            [
+                f"{{{item['value']}}}"
+                if item["type"] == "column"
+                else f"'{item['value']}'"
+                for item in st.session_state.filename_pattern
+            ]
+        )
+        filename_desc = f"Pattern: {pattern_desc}"
+    elif filename_mode == "single" and st.session_state.get("filename_column"):
+        filename_desc = f"Column: {st.session_state.filename_column}"
+    else:
+        filename_desc = "Auto-numbered"
+
     st.markdown(
         f"""
     <div class="info-box">
@@ -594,7 +734,7 @@ def render_generate_section():
         <ul>
             <li>📄 Documents to generate: <strong>{handler.get_row_count()}</strong></li>
             <li>🔗 Mapped placeholders: <strong>{len(mapping)}</strong></li>
-            <li>📁 Filename column: <strong>{st.session_state.filename_column or "Auto-numbered"}</strong></li>
+            <li>📁 Filename: <strong>{filename_desc}</strong></li>
         </ul>
     </div>
     """,
@@ -626,18 +766,38 @@ def render_generate_section():
                     total = len(data_rows)
 
                     for idx, row_data in enumerate(data_rows):
-                        # Generate filename
-                        if (
-                            st.session_state.filename_column
-                            and st.session_state.filename_column in row_data
-                        ):
-                            import re
+                        # Generate filename based on mode
+                        import re
 
-                            filename = (
-                                f"{row_data[st.session_state.filename_column]}.docx"
-                            )
+                        filename_mode = st.session_state.get("filename_mode", "auto")
+
+                        if filename_mode == "pattern" and st.session_state.get(
+                            "filename_pattern"
+                        ):
+                            # Build filename from pattern
+                            filename_parts = []
+                            for item in st.session_state.filename_pattern:
+                                if (
+                                    item["type"] == "column"
+                                    and item["value"] in row_data
+                                ):
+                                    filename_parts.append(str(row_data[item["value"]]))
+                                elif item["type"] == "separator":
+                                    filename_parts.append(item["value"])
+                            filename = "".join(filename_parts) + ".docx"
                             filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
+                        elif filename_mode == "single" and st.session_state.get(
+                            "filename_column"
+                        ):
+                            if st.session_state.filename_column in row_data:
+                                filename = (
+                                    f"{row_data[st.session_state.filename_column]}.docx"
+                                )
+                                filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
+                            else:
+                                filename = f"document_{idx + 1:04d}.docx"
                         else:
+                            # Auto mode
                             filename = f"document_{idx + 1:04d}.docx"
 
                         # Generate document
