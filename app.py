@@ -266,6 +266,14 @@ def init_session_state():
         st.session_state.email_body_template = ""
     if "smtp_configured" not in st.session_state:
         st.session_state.smtp_configured = False
+    if "cc_emails" not in st.session_state:
+        st.session_state.cc_emails = ""
+    if "bcc_emails" not in st.session_state:
+        st.session_state.bcc_emails = ""
+    if "common_attachment" not in st.session_state:
+        st.session_state.common_attachment = None
+    if "email_send_results" not in st.session_state:
+        st.session_state.email_send_results = None
 
 
 def go_to_tab(tab_index):
@@ -1549,6 +1557,27 @@ def render_email_section():
             unsafe_allow_html=True,
         )
         
+        # Email recipients section (CC/BCC)
+        col1, col2 = st.columns(2)
+        with col1:
+            cc_emails = st.text_input(
+                "CC (Optional)",
+                value=st.session_state.cc_emails,
+                placeholder="email1@example.com, email2@example.com",
+                help="Separate multiple emails with commas"
+            )
+            st.session_state.cc_emails = cc_emails
+        
+        with col2:
+            bcc_emails = st.text_input(
+                "BCC (Optional)",
+                value=st.session_state.bcc_emails,
+                placeholder="email1@example.com, email2@example.com",
+                help="Separate multiple emails with commas"
+            )
+            st.session_state.bcc_emails = bcc_emails
+        
+        
         subject_template = st.text_input(
             "Email Subject",
             value=st.session_state.email_subject_template or "Document for {" + available_placeholders[0] + "}",
@@ -1563,6 +1592,38 @@ def render_email_section():
             help="Use {placeholder} format",
         )
         st.session_state.email_body_template = body_template
+        
+        # Common attachment section
+        st.markdown("**📎 Common Attachment (Optional)**")
+        st.markdown(
+            """
+            <div class="info-box">
+                Upload a file that will be attached to <strong>all emails</strong> (e.g., brochure, terms & conditions, etc.)
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            common_file = st.file_uploader(
+                "Upload Common Attachment",
+                type=["pdf", "doc", "docx", "xls", "xlsx", "txt", "jpg", "png"],
+                help="This file will be sent with every email",
+                label_visibility="collapsed",
+                key="common_file_uploader"
+            )
+            
+            if common_file:
+                st.session_state.common_attachment = (common_file.name, common_file.read())
+                st.success(f"✅ Attached: {common_file.name} ({len(st.session_state.common_attachment[1]) / 1024:.1f} KB)")
+        
+        with col2:
+            if st.session_state.common_attachment:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("🗑️ Remove", use_container_width=True):
+                    st.session_state.common_attachment = None
+                    st.rerun()
 
         # Preview section
         with st.expander("👁️ Preview First Email", expanded=False):
@@ -1585,9 +1646,18 @@ def render_email_section():
                 st.text(rendered_body)
                 st.markdown(f"**Attachment:** {st.session_state.generated_docs[first_row_idx][0]}")
 
-        # Send emails section
+        # Preview Recipients section
         st.markdown("---")
-        st.markdown("#### 4️⃣ Send Emails")
+        st.markdown("#### 5️⃣ Preview Recipients")
+        
+        st.markdown(
+            """
+            <div class="info-box">
+                <strong>📋 Review who will receive emails and what will be sent</strong>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         
         # Calculate sendable emails
         total_valid = len(results["valid"])
@@ -1595,94 +1665,236 @@ def render_email_section():
         total_skipped = len(st.session_state.skip_rows)
         total_sendable = total_valid + total_missing_filled
         
-        st.markdown(
-            f"""
-            <div class="info-box">
-                <strong>Ready to send:</strong> {total_sendable} emails<br>
-                <strong>Skipped:</strong> {total_skipped} rows
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        
-        col1, col2, col3 = st.columns([1, 2, 1])
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("📧 Total Recipients", total_sendable)
         with col2:
-            if st.button("📧 Send All Emails", type="primary", use_container_width=True):
-                if total_sendable == 0:
-                    st.error("No valid emails to send!")
-                else:
-                    # Prepare email data
-                    email_data_list = []
-                    data_df = handler.df
-                    generated_docs = st.session_state.generated_docs
-                    
-                    # Add valid emails
-                    for valid_item in results["valid"]:
-                        row_idx = valid_item["row_index"]
-                        if row_idx in st.session_state.skip_rows:
-                            continue
-                        
-                        row_data = data_df.iloc[row_idx].to_dict()
-                        email_data_list.append({
-                            "to_email": valid_item["email"],
-                            "subject": EmailHandler.render_template(subject_template, row_data),
-                            "body": EmailHandler.render_template(body_template, row_data),
-                            "attachment_filename": generated_docs[row_idx][0],
-                            "attachment_data": generated_docs[row_idx][1],
-                            "row_index": row_idx,
-                        })
-                    
-                    # Add manually filled emails
-                    for row_idx, manual_email in st.session_state.missing_emails.items():
-                        if row_idx in st.session_state.skip_rows:
-                            continue
-                        if not EmailHandler.validate_email(manual_email):
-                            continue
-                        
-                        row_data = data_df.iloc[row_idx].to_dict()
-                        email_data_list.append({
-                            "to_email": manual_email,
-                            "subject": EmailHandler.render_template(subject_template, row_data),
-                            "body": EmailHandler.render_template(body_template, row_data),
-                            "attachment_filename": generated_docs[row_idx][0],
-                            "attachment_data": generated_docs[row_idx][1],
-                            "row_index": row_idx,
-                        })
-                    
-                    # Send emails with progress
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    def progress_callback(current, total, status):
-                        progress_bar.progress(current / total)
-                        status_text.text(f"{status} ({current}/{total})")
-                    
-                    email_handler = st.session_state.email_handler
-                    send_results = email_handler.send_batch_emails(
-                        email_data_list, progress_callback=progress_callback
+            st.metric("⏭️ Skipped", total_skipped)
+        with col3:
+            if st.session_state.cc_emails:
+                cc_count = len([e for e in st.session_state.cc_emails.split(',') if e.strip()])
+                st.metric("📎 CC", cc_count)
+            else:
+                st.metric("📎 CC", 0)
+        with col4:
+            if st.session_state.common_attachment:
+                st.metric("📄 Common File", "Yes")
+            else:
+                st.metric("📄 Common File", "No")
+        
+        if total_sendable == 0:
+            st.warning("⚠️ No recipients to send emails to. Please add valid emails or uncheck skip boxes.")
+        else:
+            # Build preview data
+            preview_data = []
+            data_df = handler.df
+            generated_docs = st.session_state.generated_docs
+            
+            # Add valid emails
+            for valid_item in results["valid"]:
+                row_idx = valid_item["row_index"]
+                if row_idx in st.session_state.skip_rows:
+                    continue
+                
+                row_data = data_df.iloc[row_idx].to_dict()
+                # Get first few columns for display
+                display_cols = list(row_data.keys())[:3]
+                display_info = " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in display_cols])
+                
+                preview_data.append({
+                    "Row": row_idx + 1,
+                    "Recipient Info": display_info,
+                    "Email": valid_item["email"],
+                    "Document": generated_docs[row_idx][0],
+                })
+            
+            # Add manually filled emails
+            for row_idx, manual_email in st.session_state.missing_emails.items():
+                if row_idx in st.session_state.skip_rows:
+                    continue
+                if not EmailHandler.validate_email(manual_email):
+                    continue
+                
+                row_data = data_df.iloc[row_idx].to_dict()
+                display_cols = list(row_data.keys())[:3]
+                display_info = " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in display_cols])
+                
+                preview_data.append({
+                    "Row": row_idx + 1,
+                    "Recipient Info": display_info,
+                    "Email": manual_email,
+                    "Document": generated_docs[row_idx][0],
+                })
+            
+            # Display preview table
+            if preview_data:
+                import pandas as pd
+                preview_df = pd.DataFrame(preview_data)
+                st.markdown("**📋 Recipients List:**")
+                st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                
+                # Show CC/BCC if configured
+                if st.session_state.cc_emails or st.session_state.bcc_emails:
+                    st.markdown("**Additional Recipients:**")
+                    if st.session_state.cc_emails:
+                        st.markdown(f"- **CC:** {st.session_state.cc_emails}")
+                    if st.session_state.bcc_emails:
+                        st.markdown(f"- **BCC:** {st.session_state.bcc_emails}")
+                
+                # Show common attachment if uploaded
+                if st.session_state.common_attachment:
+                    st.markdown(f"**📎 Common Attachment:** {st.session_state.common_attachment[0]} ({len(st.session_state.common_attachment[1]) / 1024:.1f} KB)")
+                
+                # Confirm and send button
+                st.markdown("---")
+                
+                # Speed control
+                st.markdown("**⏱️ Sending Speed:**")
+                col_a, col_b = st.columns([3, 1])
+                with col_a:
+                    delay_seconds = st.slider(
+                        "Delay between emails (seconds)",
+                        min_value=0.1,
+                        max_value=2.0,
+                        value=0.5,
+                        step=0.1,
+                        help="Lower = faster, but may hit rate limits. Gmail recommended: 0.5-1.0s",
+                        label_visibility="collapsed"
                     )
-                    
-                    progress_bar.empty()
-                    status_text.empty()
-                    
-                    # Show results
-                    st.markdown("---")
-                    st.markdown("### ✅ Email Sending Complete!")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("✅ Sent", send_results["sent"])
-                    with col2:
-                        st.metric("❌ Failed", send_results["failed"])
-                    with col3:
-                        st.metric("⏭️ Skipped", total_skipped)
-                    
-                    if send_results["failed"] > 0:
-                        st.markdown("##### ❌ Failed Emails")
-                        for failed in send_results["failed_details"]:
-                            st.error(f"Row {failed['row_index'] + 1} ({failed['email']}): {failed['error']}")
-                    
-                    st.session_state.step = max(st.session_state.step, 6)
+                with col_b:
+                    estimated_time = total_sendable * delay_seconds
+                    st.metric("Est. Time", f"{estimated_time:.0f}s")
+                
+                st.info(f"💡 **Tip:** {delay_seconds}s delay = ~{60/delay_seconds:.0f} emails/minute. Gmail limit: ~500 emails/day.")
+                
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    if st.button("✅ Confirm & Send All Emails", type="primary", use_container_width=True):
+                        # Prepare email data
+                        email_data_list = []
+                        
+                        # Add valid emails
+                        for valid_item in results["valid"]:
+                            row_idx = valid_item["row_index"]
+                            if row_idx in st.session_state.skip_rows:
+                                continue
+                            
+                            row_data = data_df.iloc[row_idx].to_dict()
+                            email_data_list.append({
+                                "to_email": valid_item["email"],
+                                "subject": EmailHandler.render_template(subject_template, row_data),
+                                "body": EmailHandler.render_template(body_template, row_data),
+                                "attachment_filename": generated_docs[row_idx][0],
+                                "attachment_data": generated_docs[row_idx][1],
+                                "cc_emails": [e.strip() for e in st.session_state.cc_emails.split(',') if e.strip()] if st.session_state.cc_emails else None,
+                                "bcc_emails": [e.strip() for e in st.session_state.bcc_emails.split(',') if e.strip()] if st.session_state.bcc_emails else None,
+                                "additional_attachments": [st.session_state.common_attachment] if st.session_state.common_attachment else None,
+                                "row_index": row_idx,
+                                "recipient_info": " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in list(row_data.keys())[:3]]),
+                            })
+                        
+                        # Add manually filled emails
+                        for row_idx, manual_email in st.session_state.missing_emails.items():
+                            if row_idx in st.session_state.skip_rows:
+                                continue
+                            if not EmailHandler.validate_email(manual_email):
+                                continue
+                            
+                            row_data = data_df.iloc[row_idx].to_dict()
+                            email_data_list.append({
+                                "to_email": manual_email,
+                                "subject": EmailHandler.render_template(subject_template, row_data),
+                                "body": EmailHandler.render_template(body_template, row_data),
+                                "attachment_filename": generated_docs[row_idx][0],
+                                "attachment_data": generated_docs[row_idx][1],
+                                "cc_emails": [e.strip() for e in st.session_state.cc_emails.split(',') if e.strip()] if st.session_state.cc_emails else None,
+                                "bcc_emails": [e.strip() for e in st.session_state.bcc_emails.split(',') if e.strip()] if st.session_state.bcc_emails else None,
+                                "additional_attachments": [st.session_state.common_attachment] if st.session_state.common_attachment else None,
+                                "row_index": row_idx,
+                                "recipient_info": " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in list(row_data.keys())[:3]]),
+                            })
+                        
+                        # Send emails with progress
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        def progress_callback(current, total, status):
+                            progress_bar.progress(current / total)
+                            status_text.text(f"{status} ({current}/{total})")
+                        
+                        email_handler = st.session_state.email_handler
+                        send_results = email_handler.send_batch_emails(
+                            email_data_list,
+                            progress_callback=progress_callback,
+                            delay_seconds=delay_seconds  # Use user-selected delay
+                        )
+                        
+                        progress_bar.empty()
+                        status_text.empty()
+                        
+                        # Store results with detailed info
+                        detailed_results = []
+                        for email_data in email_data_list:
+                            row_idx = email_data["row_index"]
+                            # Check if this email was in failed list
+                            failed_item = next((f for f in send_results["failed_details"] if f["row_index"] == row_idx), None)
+                            
+                            detailed_results.append({
+                                "Row": row_idx + 1,
+                                "Recipient Info": email_data["recipient_info"],
+                                "Email": email_data["to_email"],
+                                "Document": email_data["attachment_filename"],
+                                "Status": "❌ Failed" if failed_item else "✅ Sent",
+                                "Error": failed_item["error"] if failed_item else "",
+                            })
+                        
+                        st.session_state.email_send_results = {
+                            "summary": send_results,
+                            "details": detailed_results,
+                        }
+                        
+                        st.session_state.step = max(st.session_state.step, 6)
+                        st.rerun()
+        
+        # Show results if available
+        if st.session_state.email_send_results:
+            st.markdown("---")
+            st.markdown("#### 6️⃣ Send Results")
+            
+            results_data = st.session_state.email_send_results
+            summary = results_data["summary"]
+            
+            # Summary metrics
+            st.markdown("**📊 Summary:**")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("✅ Sent Successfully", summary["sent"], delta=None, delta_color="normal")
+            with col2:
+                st.metric("❌ Failed", summary["failed"], delta=None, delta_color="inverse")
+            with col3:
+                st.metric("⏭️ Skipped", total_skipped)
+            
+            # Detailed results table
+            st.markdown("**📋 Detailed Results:**")
+            import pandas as pd
+            results_df = pd.DataFrame(results_data["details"])
+            st.dataframe(results_df, use_container_width=True, hide_index=True)
+            
+            # Download results as CSV
+            csv = results_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download Results as CSV",
+                data=csv,
+                file_name="email_send_results.csv",
+                mime="text/csv",
+            )
+            
+            # Reset button
+            if st.button("🔄 Send More Emails"):
+                st.session_state.email_send_results = None
+                st.rerun()
+
 
     # Navigation buttons
     render_nav_buttons(4, can_proceed=False, show_next=False)

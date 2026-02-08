@@ -83,16 +83,22 @@ class EmailHandler:
         body: str,
         attachment_filename: str,
         attachment_data: bytes,
+        cc_emails: Optional[List[str]] = None,
+        bcc_emails: Optional[List[str]] = None,
+        additional_attachments: Optional[List[Tuple[str, bytes]]] = None,
     ) -> Tuple[bool, str]:
         """
-        Send a single personalized email with attachment.
+        Send a single personalized email with attachment(s).
 
         Args:
             to_email: Recipient email address
             subject: Email subject
             body: Email body (plain text)
-            attachment_filename: Name of the attachment file
-            attachment_data: Binary data of the attachment
+            attachment_filename: Name of the primary attachment file
+            attachment_data: Binary data of the primary attachment
+            cc_emails: Optional list of CC email addresses
+            bcc_emails: Optional list of BCC email addresses
+            additional_attachments: Optional list of (filename, data) tuples for common attachments
 
         Returns:
             Tuple of (success: bool, error_message: str or empty)
@@ -103,15 +109,62 @@ class EmailHandler:
             msg["Subject"] = subject
             msg["From"] = formataddr((self.sender_name, self.sender_email))
             msg["To"] = to_email
+            
+            # Add CC recipients
+            if cc_emails:
+                valid_cc = [email.strip() for email in cc_emails if email and email.strip()]
+                if valid_cc:
+                    msg["Cc"] = ", ".join(valid_cc)
+            
+            # Add BCC recipients
+            if bcc_emails:
+                valid_bcc = [email.strip() for email in bcc_emails if email and email.strip()]
+                if valid_bcc:
+                    msg["Bcc"] = ", ".join(valid_bcc)
+            
             msg.set_content(body)
 
-            # Add attachment
+            # Add primary attachment (personalized document)
             msg.add_attachment(
                 attachment_data,
                 maintype="application",
                 subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
                 filename=attachment_filename,
             )
+            
+            # Add additional common attachments
+            if additional_attachments:
+                for filename, data in additional_attachments:
+                    # Detect file type from extension
+                    if filename.lower().endswith('.pdf'):
+                        msg.add_attachment(
+                            data,
+                            maintype="application",
+                            subtype="pdf",
+                            filename=filename,
+                        )
+                    elif filename.lower().endswith(('.doc', '.docx')):
+                        msg.add_attachment(
+                            data,
+                            maintype="application",
+                            subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            filename=filename,
+                        )
+                    elif filename.lower().endswith(('.xls', '.xlsx')):
+                        msg.add_attachment(
+                            data,
+                            maintype="application",
+                            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            filename=filename,
+                        )
+                    else:
+                        # Generic binary attachment
+                        msg.add_attachment(
+                            data,
+                            maintype="application",
+                            subtype="octet-stream",
+                            filename=filename,
+                        )
 
             # Send email
             with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30) as server:
@@ -182,6 +235,9 @@ class EmailHandler:
                 body=email_data["body"],
                 attachment_filename=email_data["attachment_filename"],
                 attachment_data=email_data["attachment_data"],
+                cc_emails=email_data.get("cc_emails"),
+                bcc_emails=email_data.get("bcc_emails"),
+                additional_attachments=email_data.get("additional_attachments"),
             )
 
             if success:
