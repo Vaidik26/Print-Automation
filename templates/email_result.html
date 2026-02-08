@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="step-indicator">
+    <div class="step"><div class="step-number">✓</div> Doc Gen</div>
+    <div class="step"><div class="step-number">✓</div> Email Config</div>
+    <div class="step"><div class="step-number">✓</div> Compose</div>
+    <div class="step active"><div class="step-number">7</div> Results</div>
+</div>
+
+<div class="card">
+    <h2>🚀 Email Sending Results</h2>
+    
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 2rem;">
+        <div style="background: #eef2ff; padding: 1.5rem; border-radius: 8px; text-align: center;">
+            <div style="font-size: 2rem; font-weight: bold; color: var(--primary);">{{ results.total }}</div>
+            <div>Total Emails</div>
+        </div>
+        <div style="background: #ecfdf5; padding: 1.5rem; border-radius: 8px; text-align: center;">
+            <div style="font-size: 2rem; font-weight: bold; color: #10b981;">{{ results.sent }}</div>
+            <div>Sent Successfully</div>
+        </div>
+        <div style="background: #fef2f2; padding: 1.5rem; border-radius: 8px; text-align: center;">
+            <div style="font-size: 2rem; font-weight: bold; color: #ef4444;">{{ results.failed }}</div>
+            <div>Failed</div>
+        </div>
+    </div>
+
+    {% if results.failed_details %}
+    <h3>❌ Failed Emails</h3>
+    <table style="width: 100%; border-collapse: collapse; margin-top: 1rem;">
+        <thead>
+            <tr style="background: #f8f9fa;">
+                <th style="padding: 0.75rem; text-align: left; border-bottom: 2px solid #ddd;">Email</th>
+                <th style="padding: 0.75rem; text-align: left; border-bottom: 2px solid #ddd;">Error</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for fail in results.failed_details %}
+            <tr>
+                <td style="padding: 0.75rem; border-bottom: 1px solid #eee;">{{ fail.email }}</td>
+                <td style="padding: 0.75rem; border-bottom: 1px solid #eee; color: #ef4444;">{{ fail.error }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+    
+    <div style="margin-top: 2rem; text-align: center;">
+        <a href="/" class="btn">Start New Batch 🔄</a>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="card">
+    <h2>📧 Step 6: Compose Email</h2>
+    
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <p class="text-muted">Draft your email. You can use placeholders like <code>{Column Name}</code>.</p>
+    
+    <div style="margin-bottom: 1rem;">
+        <strong>Available Placeholders:</strong><br>
+        {% for col in columns %}
+        <span class="placeholder-tag" onclick="insertPlaceholder('{{ col }}')" style="cursor: pointer; display: inline-block; margin: 0.25rem;">{{"{" + col + "}"}}</span>
+        {% endfor %}
+    </div>
+
+    <form action="/email-prepare" method="post" id="emailForm">
+        <div class="form-group">
+            <label>Recipient Column</label>
+            <select name="email_column" required>
+                <option value="">-- Select Column containing Email Addresses --</option>
+                {% for col in columns %}
+                <option value="{{ col }}">{{ col }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label>Subject</label>
+            <input type="text" name="subject" id="subject" required>
+        </div>
+        
+        <div class="form-group">
+            <label>Body</label>
+            <textarea name="body" id="body" rows="10" required></textarea>
+        </div>
+        
+        <div class="form-group">
+            <label>CC (Optional, comma separated)</label>
+            <input type="text" name="cc_emails" placeholder="manager@example.com, hr@example.com">
+        </div>
+        
+        <div class="form-group">
+            <label>BCC (Optional, comma separated)</label>
+            <input type="text" name="bcc_emails">
+        </div>
+
+        <button type="submit" class="btn">Preview & Prepare ➡️</button>
+    </form>
+</div>
+
+<script>
+    function insertPlaceholder(col) {
+        const placeholder = '{' + col + '}';
+        const body = document.getElementById('body'); // Ensure this ID exists on your textarea
+        
+        // If body is not found/not a textarea, just append or alert (safety check)
+        if (!body) return;
+
+        const start = body.selectionStart;
+        const end = body.selectionEnd;
+        const text = body.value;
+        body.value = text.substring(0, start) + placeholder + text.substring(end);
+        body.focus();
+        body.selectionStart = body.selectionEnd = start + placeholder.length;
+    }
+
+    // Auto-select email column
+    document.addEventListener('DOMContentLoaded', function() {
+        const select = document.querySelector('select[name="email_column"]');
+        if (!select) return;
+        
+        const options = select.options;
+        const keywords = ['email', 'e-mail', 'mail', 'email address', 'mail address'];
+        
+        for (let i = 0; i < options.length; i++) {
+            const text = options[i].text.toLowerCase().trim();
+            // Check for exact match or contains
+            if (keywords.some(k => text.includes(k))) {
+                select.selectedIndex = i;
+                break;
+            }
+        }
+    });
+</script>
+{% endblock %}

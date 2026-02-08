@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="card">
+    <h2>Step 1: Upload Template</h2>
+    
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <p>Upload a Word document (.docx) with placeholders in <code>{column_name}</code> format.</p>
+    
+    <form action="/upload-template" method="post" enctype="multipart/form-data">
+        <div class="form-group">
+            <input type="file" name="template_file" accept=".docx" required>
+        </div>
+        
+        <button type="submit" class="btn">Next: Upload Data ➡️</button>
+    </form>
+</div>
+{% endblock %}

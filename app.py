@@ -13,7 +13,7 @@ from utils.email_handler import EmailHandler
 
 # Page configuration
 st.set_page_config(
-    page_title="Print Automation - Document Generator",
+    page_title="AutoDispatch - Document Generator",
     page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -319,7 +319,7 @@ def render_nav_buttons(
 def render_header():
     """Render the application header."""
     st.markdown(
-        '<h1 class="main-header">📄 Print Automation</h1>', unsafe_allow_html=True
+        '<h1 class="main-header">📄 AutoDispatch</h1>', unsafe_allow_html=True
     )
     st.markdown(
         '<p class="sub-header">Generate personalized documents from templates and data files</p>',

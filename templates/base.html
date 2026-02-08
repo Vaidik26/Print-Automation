@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoDispatch Professional</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <div class="icon">A</div>
+            <span>AutoDispatch</span>
+        </div>
+        
+        <ul class="nav-menu">
+            <li>
+                <a href="/" class="nav-item {% if request.url.path == '/' or request.url.path == '/upload-template' %}active{% endif %}">
+                    <span class="nav-step-num">1</span>
+                    <span>Upload Template</span>
+                </a>
+            </li>
+            <li>
+                <a href="/upload-data" class="nav-item {% if request.url.path == '/upload-data' %}active{% endif %}">
+                    <span class="nav-step-num">2</span>
+                    <span>Upload Data</span>
+                </a>
+            </li>
+            <li>
+                <a href="/map-columns" class="nav-item {% if request.url.path == '/map-columns' %}active{% endif %}">
+                    <span class="nav-step-num">3</span>
+                    <span>Map Columns</span>
+                </a>
+            </li>
+            <li>
+                <a href="#" class="nav-item {% if request.url.path == '/generate' %}active{% endif %}" style="pointer-events: none; opacity: 0.5;">
+                    <span class="nav-step-num">4</span>
+                    <span>Generate</span>
+                </a>
+            </li>
+            <li style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+                <small style="color: var(--text-secondary); text-transform: uppercase; padding-left: 1rem; margin-bottom: 0.5rem; display: block; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em;">Email Campaign</small>
+            </li>
+            <li>
+                <a href="/email-config" class="nav-item {% if request.url.path == '/email-config' %}active{% endif %}">
+                    <span class="nav-step-num">5</span>
+                    <span>Configuration</span>
+                </a>
+            </li>
+            <li>
+                <a href="/email-compose" class="nav-item {% if request.url.path == '/email-compose' %}active{% endif %}">
+                    <span class="nav-step-num">6</span>
+                    <span>Compose</span>
+                </a>
+            </li>
+            <li>
+                <a href="/email-dashboard" class="nav-item {% if request.url.path == '/email-dashboard' %}active{% endif %}">
+                    <span class="nav-step-num">7</span>
+                    <span>Dashboard</span>
+                </a>
+            </li>
+        </ul>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="container">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <script>
+        // Simple script to mark completed steps based on current progress
+        // This is a visual enhancement, relying on typical flow
+        const path = window.location.pathname;
+        const steps = [
+            '/', 
+            '/upload-data', 
+            '/map-columns', 
+            '/email-config', 
+            '/email-compose', 
+            '/email-dashboard'
+        ];
+        
+        const currentIndex = steps.indexOf(path);
+        if (currentIndex > 0) {
+            const navItems = document.querySelectorAll('.nav-item');
+            navItems.forEach((item, index) => {
+                if (index < currentIndex && index < 7) { // 7 is roughly the max steps we listed
+                   item.classList.add('completed');
+                   const num = item.querySelector('.nav-step-num');
+                   if (num) num.textContent = '✓';
+                }
+            });
+        }
+    </script>
+</body>
+</html>
