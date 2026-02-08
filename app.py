@@ -9,6 +9,7 @@ import zipfile
 from io import BytesIO
 from utils.document_processor import DocumentProcessor
 from utils.data_handler import DataHandler
+from utils.email_handler import EmailHandler
 
 # Page configuration
 st.set_page_config(
@@ -247,6 +248,24 @@ def init_session_state():
         st.session_state.step = 1
     if "current_tab" not in st.session_state:
         st.session_state.current_tab = 0
+    
+    # Email-related session state
+    if "email_handler" not in st.session_state:
+        st.session_state.email_handler = None
+    if "email_column" not in st.session_state:
+        st.session_state.email_column = None
+    if "email_validation_results" not in st.session_state:
+        st.session_state.email_validation_results = None
+    if "missing_emails" not in st.session_state:
+        st.session_state.missing_emails = {}
+    if "skip_rows" not in st.session_state:
+        st.session_state.skip_rows = set()
+    if "email_subject_template" not in st.session_state:
+        st.session_state.email_subject_template = ""
+    if "email_body_template" not in st.session_state:
+        st.session_state.email_body_template = ""
+    if "smtp_configured" not in st.session_state:
+        st.session_state.smtp_configured = False
 
 
 def go_to_tab(tab_index):
@@ -273,7 +292,7 @@ def render_nav_buttons(
                 st.rerun()
 
     with col3:
-        if show_next and current_tab < 3:
+        if show_next and current_tab < 4:
             if can_proceed:
                 if st.button(
                     next_label, key=f"next_{current_tab}", use_container_width=True
@@ -299,6 +318,7 @@ def render_header():
         unsafe_allow_html=True,
     )
 
+
     # Step indicator
     step = st.session_state.step
     st.markdown(
@@ -319,6 +339,10 @@ def render_header():
         <div class="step {"completed" if step > 4 else "active" if step == 4 else ""}">
             <div class="step-number">{"✓" if step > 4 else "4"}</div>
             <span>Generate</span>
+        </div>
+        <div class="step {"completed" if step > 5 else "active" if step == 5 else ""}">
+            <div class="step-number">{"✓" if step > 5 else "5"}</div>
+            <span>Send Emails</span>
         </div>
     </div>
     """,
@@ -861,8 +885,808 @@ def render_generate_section():
                     f"Showing first 20 of {len(documents)} documents. Download ZIP for all."
                 )
 
-    # Navigation buttons (back only on generate page)
-    render_nav_buttons(3, can_proceed=False, show_next=False)
+    # Navigation buttons
+    can_proceed_to_email = st.session_state.generated_docs is not None
+    render_nav_buttons(
+        3, can_proceed=can_proceed_to_email, next_label="Next: Send Emails ➡️"
+    )
+
+
+def render_email_section():
+    """Render email configuration and sending section."""
+    if st.session_state.step < 4 or not st.session_state.generated_docs:
+        st.info(
+            "👆 Please generate documents first. Click 'Back' to go to the previous step."
+        )
+        render_nav_buttons(4, can_proceed=False, show_next=False)
+        return
+
+    st.markdown("### 📧 Step 5: Send Personalized Emails")
+
+    # SMTP Configuration in sidebar
+    with st.sidebar:
+        st.markdown("## 📮 SMTP Configuration")
+        
+        smtp_server = st.text_input(
+            "SMTP Server",
+            value="smtp.gmail.com",
+            help="Gmail: smtp.gmail.com, Outlook: smtp.office365.com",
+        )
+        smtp_port = st.number_input("SMTP Port", value=587, min_value=1, max_value=65535)
+        sender_email = st.text_input("Sender Email", value="")
+        sender_password = st.text_input(
+            "App Password",
+            type="password",
+            help="For Gmail, generate at: https://myaccount.google.com/apppasswords",
+        )
+        sender_name = st.text_input("Sender Name (Optional)", value="")
+
+        if st.button("🔌 Test Connection", use_container_width=True):
+            if not sender_email or not sender_password:
+                st.error("Please enter email and password")
+            else:
+                with st.spinner("Testing connection..."):
+                    handler = EmailHandler(
+                        smtp_server, smtp_port, sender_email, sender_password, sender_name
+                    )
+                    success, message = handler.test_connection()
+                    if success:
+                        st.success(message)
+                        st.session_state.email_handler = handler
+                        st.session_state.smtp_configured = True
+                    else:
+                        st.error(message)
+                        st.session_state.smtp_configured = False
+
+    # Main email section
+    if not st.session_state.smtp_configured:
+        st.warning("⚠️ Please configure and test SMTP connection in the sidebar first.")
+        render_nav_buttons(4, can_proceed=False, show_next=False)
+        return
+
+    # Email column selection
+    st.markdown("#### 1️⃣ Select Email Column")
+    
+    handler = st.session_state.data_handler
+    columns = handler.get_columns()
+    
+    # Auto-detect email column
+    email_column_suggestions = [col for col in columns if 'email' in col.lower() or 'e-mail' in col.lower() or 'mail' in col.lower()]
+    default_email_col = email_column_suggestions[0] if email_column_suggestions else columns[0]
+    
+    if st.session_state.email_column is None:
+        st.session_state.email_column = default_email_col
+    
+    email_column = st.selectbox(
+        "Column containing recipient email addresses",
+        options=columns,
+        index=columns.index(st.session_state.email_column) if st.session_state.email_column in columns else 0,
+        key="email_column_select",
+    )
+    st.session_state.email_column = email_column
+
+    # Validate emails button
+    if st.button("🔍 Validate Emails", type="primary"):
+        data_df = handler.df
+        
+        validation_results = {
+            "valid": [],
+            "missing": [],
+            "invalid": [],
+        }
+        
+        for idx, row in data_df.iterrows():
+            email_value = row.get(email_column, "")
+            
+            if not email_value or str(email_value).strip() == "" or str(email_value).lower() == "nan":
+                validation_results["missing"].append({
+                    "row_index": idx,
+                    "row_data": row.to_dict(),
+                })
+            elif EmailHandler.validate_email(str(email_value)):
+                validation_results["valid"].append({
+                    "row_index": idx,
+                    "email": str(email_value).strip(),
+                })
+            else:
+                validation_results["invalid"].append({
+                    "row_index": idx,
+                    "email": str(email_value),
+                    "row_data": row.to_dict(),
+                })
+        
+        st.session_state.email_validation_results = validation_results
+
+    # Display validation results
+    if st.session_state.email_validation_results:
+        results = st.session_state.email_validation_results
+        
+        st.markdown("---")
+        st.markdown("#### 2️⃣ Email Validation Results")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("✅ Valid", len(results["valid"]))
+        with col2:
+            st.metric("⚠️ Missing", len(results["missing"]))
+        with col3:
+            st.metric("❌ Invalid", len(results["invalid"]))
+
+        # Missing emails section
+        if results["missing"]:
+            st.markdown("---")
+            st.markdown("##### ⚠️ Missing Emails")
+            st.markdown(
+                """
+                <div class="info-box">
+                    <strong>Action Required:</strong> Enter email addresses for rows with missing emails, or skip them.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            
+            # Get first few columns for display (excluding email column)
+            display_columns = [col for col in columns[:3] if col != email_column]
+            
+            for missing_item in results["missing"][:20]:  # Show first 20
+                row_idx = missing_item["row_index"]
+                row_data = missing_item["row_data"]
+                
+                col1, col2, col3 = st.columns([2, 3, 1])
+                
+                with col1:
+                    # Display some identifying info
+                    display_info = " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in display_columns])
+                    st.markdown(f"**Row {row_idx + 1}:** {display_info}")
+                
+                with col2:
+                    manual_email = st.text_input(
+                        "Enter email",
+                        key=f"missing_email_{row_idx}",
+                        placeholder="email@example.com",
+                        label_visibility="collapsed",
+                    )
+                    if manual_email:
+                        st.session_state.missing_emails[row_idx] = manual_email
+                
+                with col3:
+                    skip = st.checkbox("Skip", key=f"skip_{row_idx}")
+                    if skip:
+                        st.session_state.skip_rows.add(row_idx)
+                    elif row_idx in st.session_state.skip_rows:
+                        st.session_state.skip_rows.remove(row_idx)
+            
+            if len(results["missing"]) > 20:
+                st.info(f"Showing first 20 of {len(results['missing'])} missing emails")
+
+        # Invalid emails section
+        if results["invalid"]:
+            st.markdown("---")
+            st.markdown("##### ❌ Invalid Email Formats")
+            
+            for invalid_item in results["invalid"][:10]:  # Show first 10
+                row_idx = invalid_item["row_index"]
+                current_email = invalid_item["email"]
+                row_data = invalid_item["row_data"]
+                
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    st.markdown(f"**Row {row_idx + 1}:** `{current_email}`")
+                
+                with col2:
+                    corrected_email = st.text_input(
+                        "Correct email",
+                        key=f"invalid_email_{row_idx}",
+                        value=current_email,
+                        label_visibility="collapsed",
+                    )
+                    if corrected_email != current_email:
+                        st.session_state.missing_emails[row_idx] = corrected_email
+
+        # Email template section
+        st.markdown("---")
+        st.markdown("#### 3️⃣ Email Template")
+        
+        # Show available placeholders
+        mapping = st.session_state.column_mapping
+        available_placeholders = list(mapping.keys())
+        
+        st.markdown(
+            f"""
+            <div class="info-box">
+                <strong>Available Placeholders:</strong> {", ".join([f"<code>{{{p}}}</code>" for p in available_placeholders])}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        
+        subject_template = st.text_input(
+            "Email Subject",
+            value=st.session_state.email_subject_template or "Document for {" + available_placeholders[0] + "}",
+            help="Use {placeholder} format",
+        )
+        st.session_state.email_subject_template = subject_template
+        
+        body_template = st.text_area(
+            "Email Body",
+            value=st.session_state.email_body_template or f"Dear Recipient,\n\nPlease find your document attached.\n\nBest regards",
+            height=200,
+            help="Use {placeholder} format",
+        )
+        st.session_state.email_body_template = body_template
+
+        # Preview section
+        with st.expander("👁️ Preview First Email", expanded=False):
+            if results["valid"]:
+                first_valid = results["valid"][0]
+                first_row_idx = first_valid["row_index"]
+                first_email = first_valid["email"]
+                
+                # Get row data
+                data_df = handler.df
+                first_row_data = data_df.iloc[first_row_idx].to_dict()
+                
+                # Render templates
+                rendered_subject = EmailHandler.render_template(subject_template, first_row_data)
+                rendered_body = EmailHandler.render_template(body_template, first_row_data)
+                
+                st.markdown(f"**To:** {first_email}")
+                st.markdown(f"**Subject:** {rendered_subject}")
+                st.markdown("**Body:**")
+                st.text(rendered_body)
+                st.markdown(f"**Attachment:** {st.session_state.generated_docs[first_row_idx][0]}")
+
+        # Send emails section
+        st.markdown("---")
+        st.markdown("#### 4️⃣ Send Emails")
+        
+        # Calculate sendable emails
+        total_valid = len(results["valid"])
+        total_missing_filled = len([k for k in st.session_state.missing_emails.keys() if k not in st.session_state.skip_rows])
+        total_skipped = len(st.session_state.skip_rows)
+        total_sendable = total_valid + total_missing_filled
+        
+        st.markdown(
+            f"""
+            <div class="info-box">
+                <strong>Ready to send:</strong> {total_sendable} emails<br>
+                <strong>Skipped:</strong> {total_skipped} rows
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("📧 Send All Emails", type="primary", use_container_width=True):
+                if total_sendable == 0:
+                    st.error("No valid emails to send!")
+                else:
+                    # Prepare email data
+                    email_data_list = []
+                    data_df = handler.df
+                    generated_docs = st.session_state.generated_docs
+                    
+                    # Add valid emails
+                    for valid_item in results["valid"]:
+                        row_idx = valid_item["row_idx"]
+                        if row_idx in st.session_state.skip_rows:
+                            continue
+                        
+                        row_data = data_df.iloc[row_idx].to_dict()
+                        email_data_list.append({
+                            "to_email": valid_item["email"],
+                            "subject": EmailHandler.render_template(subject_template, row_data),
+                            "body": EmailHandler.render_template(body_template, row_data),
+                            "attachment_filename": generated_docs[row_idx][0],
+                            "attachment_data": generated_docs[row_idx][1],
+                            "row_index": row_idx,
+                        })
+                    
+                    # Add manually filled emails
+                    for row_idx, manual_email in st.session_state.missing_emails.items():
+                        if row_idx in st.session_state.skip_rows:
+                            continue
+                        if not EmailHandler.validate_email(manual_email):
+                            continue
+                        
+                        row_data = data_df.iloc[row_idx].to_dict()
+                        email_data_list.append({
+                            "to_email": manual_email,
+                            "subject": EmailHandler.render_template(subject_template, row_data),
+                            "body": EmailHandler.render_template(body_template, row_data),
+                            "attachment_filename": generated_docs[row_idx][0],
+                            "attachment_data": generated_docs[row_idx][1],
+                            "row_index": row_idx,
+                        })
+                    
+                    # Send emails with progress
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    def progress_callback(current, total, status):
+                        progress_bar.progress(current / total)
+                        status_text.text(f"{status} ({current}/{total})")
+                    
+                    email_handler = st.session_state.email_handler
+                    send_results = email_handler.send_batch_emails(
+                        email_data_list, progress_callback=progress_callback
+                    )
+                    
+                    progress_bar.empty()
+                    status_text.empty()
+                    
+                    # Show results
+                    st.markdown("---")
+                    st.markdown("### ✅ Email Sending Complete!")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("✅ Sent", send_results["sent"])
+                    with col2:
+                        st.metric("❌ Failed", send_results["failed"])
+                    with col3:
+                        st.metric("⏭️ Skipped", total_skipped)
+                    
+                    if send_results["failed"] > 0:
+                        st.markdown("##### ❌ Failed Emails")
+                        for failed in send_results["failed_details"]:
+                            st.error(f"Row {failed['row_index'] + 1} ({failed['email']}): {failed['error']}")
+                    
+                    st.session_state.step = max(st.session_state.step, 6)
+
+    # Navigation buttons
+    render_nav_buttons(4, can_proceed=False, show_next=False)
+
+
+
+def render_email_section():
+    """Render email configuration and sending section."""
+    if st.session_state.step < 4 or not st.session_state.generated_docs:
+        st.info(
+            "👆 Please generate documents first. Click 'Back' to go to the previous step."
+        )
+        render_nav_buttons(4, can_proceed=False, show_next=False)
+        return
+
+    st.markdown("### 📧 Step 5: Send Personalized Emails")
+
+    # SMTP Configuration on main page
+    st.markdown("#### 1️⃣ SMTP Configuration")
+    
+    st.markdown(
+        """
+        <div class="info-box">
+            <strong>📮 Configure your email settings to send documents</strong>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Email input with provider detection
+        sender_email = st.text_input(
+            "Your Email Address",
+            value="",
+            placeholder="your.email@gmail.com",
+            help="Enter your email address to send from"
+        )
+    
+    with col2:
+        sender_name = st.text_input(
+            "Sender Name (Optional)",
+            value="",
+            placeholder="Your Name or Company Name"
+        )
+    
+    # Auto-detect provider and configure SMTP
+    smtp_server = "smtp.gmail.com"
+    smtp_port = 587
+    
+    if sender_email:
+        if "gmail.com" in sender_email.lower():
+            smtp_server = "smtp.gmail.com"
+            smtp_port = 587
+            provider = "Gmail"
+        elif "outlook.com" in sender_email.lower() or "hotmail.com" in sender_email.lower():
+            smtp_server = "smtp.office365.com"
+            smtp_port = 587
+            provider = "Outlook"
+        elif "yahoo.com" in sender_email.lower():
+            smtp_server = "smtp.mail.yahoo.com"
+            smtp_port = 587
+            provider = "Yahoo"
+        else:
+            provider = "Custom"
+            col1, col2 = st.columns(2)
+            with col1:
+                smtp_server = st.text_input("SMTP Server", value="smtp.gmail.com")
+            with col2:
+                smtp_port = st.number_input("SMTP Port", value=587, min_value=1, max_value=65535)
+        
+        if provider in ["Gmail", "Outlook", "Yahoo"]:
+            st.success(f"✅ Detected: {provider} (SMTP: {smtp_server}:{smtp_port})")
+    
+    # App Password with direct link
+    if sender_email and "gmail.com" in sender_email.lower():
+        col1, col2 = st.columns([3, 2])
+        with col1:
+            st.markdown(
+                """
+                <div style="background: rgba(102, 126, 234, 0.1); padding: 10px; border-radius: 8px; margin-bottom: 10px;">
+                    <strong>📝 How to get Gmail App Password:</strong><br>
+                    1. Click the link → 
+                    2. Sign in to your Google Account<br>
+                    3. Create an App Password<br>
+                    4. Copy and paste it below
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        with col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(
+                "🔗 [**Get Gmail App Password →**](https://myaccount.google.com/apppasswords)",
+                unsafe_allow_html=True
+            )
+    elif sender_email and "outlook.com" in sender_email.lower():
+        st.info("💡 For Outlook, you may need to enable 'Less secure app access' or use an App Password")
+    elif sender_email and "yahoo.com" in sender_email.lower():
+        st.info("💡 For Yahoo, generate an App Password from Account Security settings")
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        sender_password = st.text_input(
+            "App Password",
+            type="password",
+            placeholder="Enter your app password here",
+            help="Paste the app password you generated"
+        )
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🔌 Test Connection", use_container_width=True):
+            if not sender_email or not sender_password:
+                st.error("❌ Please enter both email and app password")
+            else:
+                with st.spinner("Testing connection..."):
+                    handler = EmailHandler(
+                        smtp_server, smtp_port, sender_email, sender_password, sender_name
+                    )
+                    success, message = handler.test_connection()
+                    if success:
+                        st.success(message)
+                        st.session_state.email_handler = handler
+                        st.session_state.smtp_configured = True
+                    else:
+                        st.error(message)
+                        st.session_state.smtp_configured = False
+
+    # Main email section
+    if not st.session_state.smtp_configured:
+        st.warning("⚠️ Please configure and test SMTP connection in the sidebar first.")
+        render_nav_buttons(4, can_proceed=False, show_next=False)
+        return
+
+    # Email column selection
+    st.markdown("---")
+    st.markdown("#### 2️⃣ Select Email Column")
+    
+    handler = st.session_state.data_handler
+    columns = handler.get_columns()
+    
+    # Auto-detect email column
+    email_column_suggestions = [col for col in columns if 'email' in col.lower() or 'e-mail' in col.lower() or 'mail' in col.lower()]
+    default_email_col = email_column_suggestions[0] if email_column_suggestions else columns[0]
+    
+    if st.session_state.email_column is None:
+        st.session_state.email_column = default_email_col
+    
+    email_column = st.selectbox(
+        "Column containing recipient email addresses",
+        options=columns,
+        index=columns.index(st.session_state.email_column) if st.session_state.email_column in columns else 0,
+        key="email_column_select",
+    )
+    st.session_state.email_column = email_column
+
+    # Validate emails button
+    if st.button("🔍 Validate Emails", type="primary"):
+        data_df = handler.df
+        
+        validation_results = {
+            "valid": [],
+            "missing": [],
+            "invalid": [],
+        }
+        
+        for idx, row in data_df.iterrows():
+            email_value = row.get(email_column, "")
+            
+            if not email_value or str(email_value).strip() == "" or str(email_value).lower() == "nan":
+                validation_results["missing"].append({
+                    "row_index": idx,
+                    "row_data": row.to_dict(),
+                })
+            elif EmailHandler.validate_email(str(email_value)):
+                validation_results["valid"].append({
+                    "row_index": idx,
+                    "email": str(email_value).strip(),
+                })
+            else:
+                validation_results["invalid"].append({
+                    "row_index": idx,
+                    "email": str(email_value),
+                    "row_data": row.to_dict(),
+                })
+        
+        st.session_state.email_validation_results = validation_results
+
+    # Display validation results
+    if st.session_state.email_validation_results:
+        results = st.session_state.email_validation_results
+        
+        st.markdown("---")
+        st.markdown("#### 3️⃣ Email Validation Results")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("✅ Valid", len(results["valid"]))
+        with col2:
+            st.metric("⚠️ Missing", len(results["missing"]))
+        with col3:
+            st.metric("❌ Invalid", len(results["invalid"]))
+
+        # Missing emails section
+        if results["missing"]:
+            st.markdown("---")
+            st.markdown("##### ⚠️ Missing Emails")
+            st.markdown(
+                """
+                <div class="info-box">
+                    <strong>Action Required:</strong> Enter email addresses for rows with missing emails, or skip them.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            
+            # Bulk action buttons
+            col1, col2, col3 = st.columns([1, 1, 3])
+            with col1:
+                if st.button("✅ Select All", use_container_width=True, help="Select all rows with missing emails"):
+                    # Clear skip_rows for all missing email rows
+                    for missing_item in results["missing"]:
+                        row_idx = missing_item["row_index"]
+                        if row_idx in st.session_state.skip_rows:
+                            st.session_state.skip_rows.remove(row_idx)
+                    st.success(f"Selected all {len(results['missing'])} rows")
+                    st.rerun()
+            
+            with col2:
+                if st.button("⏭️ Skip All", use_container_width=True, help="Skip all rows with missing emails"):
+                    # Add all missing email rows to skip_rows
+                    for missing_item in results["missing"]:
+                        row_idx = missing_item["row_index"]
+                        st.session_state.skip_rows.add(row_idx)
+                    st.success(f"Skipped all {len(results['missing'])} rows")
+                    st.rerun()
+            
+            # Get first few columns for display (excluding email column)
+            display_columns = [col for col in columns[:3] if col != email_column]
+            
+            for missing_item in results["missing"][:20]:  # Show first 20
+                row_idx = missing_item["row_index"]
+                row_data = missing_item["row_data"]
+                
+                col1, col2, col3 = st.columns([2, 3, 1])
+                
+                with col1:
+                    # Display some identifying info
+                    display_info = " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in display_columns])
+                    st.markdown(f"**Row {row_idx + 1}:** {display_info}")
+                
+                with col2:
+                    manual_email = st.text_input(
+                        "Enter email",
+                        key=f"missing_email_{row_idx}",
+                        placeholder="email@example.com",
+                        label_visibility="collapsed",
+                    )
+                    if manual_email:
+                        st.session_state.missing_emails[row_idx] = manual_email
+                
+                with col3:
+                    skip = st.checkbox("Skip", key=f"skip_{row_idx}", value=row_idx in st.session_state.skip_rows)
+                    if skip:
+                        st.session_state.skip_rows.add(row_idx)
+                    elif row_idx in st.session_state.skip_rows:
+                        st.session_state.skip_rows.remove(row_idx)
+            
+            if len(results["missing"]) > 20:
+                st.info(f"Showing first 20 of {len(results['missing'])} missing emails")
+
+        # Invalid emails section
+        if results["invalid"]:
+            st.markdown("---")
+            st.markdown("##### ❌ Invalid Email Formats")
+            
+            for invalid_item in results["invalid"][:10]:  # Show first 10
+                row_idx = invalid_item["row_index"]
+                current_email = invalid_item["email"]
+                row_data = invalid_item["row_data"]
+                
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    st.markdown(f"**Row {row_idx + 1}:** `{current_email}`")
+                
+                with col2:
+                    corrected_email = st.text_input(
+                        "Correct email",
+                        key=f"invalid_email_{row_idx}",
+                        value=current_email,
+                        label_visibility="collapsed",
+                    )
+                    if corrected_email != current_email:
+                        st.session_state.missing_emails[row_idx] = corrected_email
+
+        # Email template section
+        st.markdown("---")
+        st.markdown("#### 3️⃣ Email Template")
+        
+        # Show available placeholders
+        mapping = st.session_state.column_mapping
+        available_placeholders = list(mapping.keys())
+        
+        st.markdown(
+            f"""
+            <div class="info-box">
+                <strong>Available Placeholders:</strong> {", ".join([f"<code>{{{p}}}</code>" for p in available_placeholders])}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        
+        subject_template = st.text_input(
+            "Email Subject",
+            value=st.session_state.email_subject_template or "Document for {" + available_placeholders[0] + "}",
+            help="Use {placeholder} format",
+        )
+        st.session_state.email_subject_template = subject_template
+        
+        body_template = st.text_area(
+            "Email Body",
+            value=st.session_state.email_body_template or f"Dear Recipient,\n\nPlease find your document attached.\n\nBest regards",
+            height=200,
+            help="Use {placeholder} format",
+        )
+        st.session_state.email_body_template = body_template
+
+        # Preview section
+        with st.expander("👁️ Preview First Email", expanded=False):
+            if results["valid"]:
+                first_valid = results["valid"][0]
+                first_row_idx = first_valid["row_index"]
+                first_email = first_valid["email"]
+                
+                # Get row data
+                data_df = handler.df
+                first_row_data = data_df.iloc[first_row_idx].to_dict()
+                
+                # Render templates
+                rendered_subject = EmailHandler.render_template(subject_template, first_row_data)
+                rendered_body = EmailHandler.render_template(body_template, first_row_data)
+                
+                st.markdown(f"**To:** {first_email}")
+                st.markdown(f"**Subject:** {rendered_subject}")
+                st.markdown("**Body:**")
+                st.text(rendered_body)
+                st.markdown(f"**Attachment:** {st.session_state.generated_docs[first_row_idx][0]}")
+
+        # Send emails section
+        st.markdown("---")
+        st.markdown("#### 4️⃣ Send Emails")
+        
+        # Calculate sendable emails
+        total_valid = len(results["valid"])
+        total_missing_filled = len([k for k in st.session_state.missing_emails.keys() if k not in st.session_state.skip_rows])
+        total_skipped = len(st.session_state.skip_rows)
+        total_sendable = total_valid + total_missing_filled
+        
+        st.markdown(
+            f"""
+            <div class="info-box">
+                <strong>Ready to send:</strong> {total_sendable} emails<br>
+                <strong>Skipped:</strong> {total_skipped} rows
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("📧 Send All Emails", type="primary", use_container_width=True):
+                if total_sendable == 0:
+                    st.error("No valid emails to send!")
+                else:
+                    # Prepare email data
+                    email_data_list = []
+                    data_df = handler.df
+                    generated_docs = st.session_state.generated_docs
+                    
+                    # Add valid emails
+                    for valid_item in results["valid"]:
+                        row_idx = valid_item["row_index"]
+                        if row_idx in st.session_state.skip_rows:
+                            continue
+                        
+                        row_data = data_df.iloc[row_idx].to_dict()
+                        email_data_list.append({
+                            "to_email": valid_item["email"],
+                            "subject": EmailHandler.render_template(subject_template, row_data),
+                            "body": EmailHandler.render_template(body_template, row_data),
+                            "attachment_filename": generated_docs[row_idx][0],
+                            "attachment_data": generated_docs[row_idx][1],
+                            "row_index": row_idx,
+                        })
+                    
+                    # Add manually filled emails
+                    for row_idx, manual_email in st.session_state.missing_emails.items():
+                        if row_idx in st.session_state.skip_rows:
+                            continue
+                        if not EmailHandler.validate_email(manual_email):
+                            continue
+                        
+                        row_data = data_df.iloc[row_idx].to_dict()
+                        email_data_list.append({
+                            "to_email": manual_email,
+                            "subject": EmailHandler.render_template(subject_template, row_data),
+                            "body": EmailHandler.render_template(body_template, row_data),
+                            "attachment_filename": generated_docs[row_idx][0],
+                            "attachment_data": generated_docs[row_idx][1],
+                            "row_index": row_idx,
+                        })
+                    
+                    # Send emails with progress
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    def progress_callback(current, total, status):
+                        progress_bar.progress(current / total)
+                        status_text.text(f"{status} ({current}/{total})")
+                    
+                    email_handler = st.session_state.email_handler
+                    send_results = email_handler.send_batch_emails(
+                        email_data_list, progress_callback=progress_callback
+                    )
+                    
+                    progress_bar.empty()
+                    status_text.empty()
+                    
+                    # Show results
+                    st.markdown("---")
+                    st.markdown("### ✅ Email Sending Complete!")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("✅ Sent", send_results["sent"])
+                    with col2:
+                        st.metric("❌ Failed", send_results["failed"])
+                    with col3:
+                        st.metric("⏭️ Skipped", total_skipped)
+                    
+                    if send_results["failed"] > 0:
+                        st.markdown("##### ❌ Failed Emails")
+                        for failed in send_results["failed_details"]:
+                            st.error(f"Row {failed['row_index'] + 1} ({failed['email']}): {failed['error']}")
+                    
+                    st.session_state.step = max(st.session_state.step, 6)
+
+    # Navigation buttons
+    render_nav_buttons(4, can_proceed=False, show_next=False)
+
 
 
 def render_sidebar():
@@ -923,10 +1747,10 @@ def main():
     render_sidebar()
 
     # Tab names for navigation
-    tab_names = ["📝 Template", "📊 Data", "🔗 Mapping", "🚀 Generate"]
+    tab_names = ["📝 Template", "📊 Data", "🔗 Mapping", "🚀 Generate", "📧 Email"]
 
     # Create clickable step indicators - all as buttons for consistent UI
-    cols = st.columns(4)
+    cols = st.columns(5)
     for i, (col, name) in enumerate(zip(cols, tab_names)):
         with col:
             # Determine button style based on current tab
@@ -965,6 +1789,8 @@ def main():
         render_column_mapping()
     elif current_tab == 3:
         render_generate_section()
+    elif current_tab == 4:
+        render_email_section()
 
 
 if __name__ == "__main__":

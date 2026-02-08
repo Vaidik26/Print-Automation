@@ -1,0 +1,5 @@
+textfile.txt
+experiment.ipynb
+
+# Streamlit secrets (contains SMTP credentials)
+.streamlit/secrets.toml
