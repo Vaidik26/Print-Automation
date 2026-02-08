@@ -22,16 +22,18 @@ from utils.email_handler import EmailHandler
 app = FastAPI(title="AutoDispatch")
 
 # Setup storage
-UPLOAD_DIR = Path("temp_uploads")
+import tempfile
+UPLOAD_DIR = Path(tempfile.gettempdir()) / "print_automation_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
-GENERATED_DIR = Path("generated_docs")
+GENERATED_DIR = Path(tempfile.gettempdir()) / "print_automation_generated"
 GENERATED_DIR.mkdir(exist_ok=True)
 
 # Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+BASE_DIR = Path(__file__).resolve().parent
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 # Setup templates
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # Cleanup helper
 def get_session_dir(session_id: str) -> Path:
