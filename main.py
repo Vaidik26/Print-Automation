@@ -4,7 +4,7 @@ import uuid
 import json
 from typing import List, Dict, Optional
 from pathlib import Path
-from fastapi import FastAPI, Request, UploadFile, File, Form, Cookie, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, Form, Cookie, HTTPException, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -20,6 +20,15 @@ from utils.data_handler import DataHandler
 from utils.email_handler import EmailHandler
 
 app = FastAPI(title="AutoDispatch")
+
+# Add CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Setup storage
 import tempfile
@@ -40,6 +49,16 @@ def get_session_dir(session_id: str) -> Path:
     session_dir = UPLOAD_DIR / session_id
     session_dir.mkdir(exist_ok=True)
     return session_dir
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Render."""
+    return {"status": "ok"}
+
+@app.head("/")
+async def head_home():
+    """Explicitly handle HEAD requests for Render health checks."""
+    return Response(status_code=200)
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
