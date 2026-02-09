@@ -220,3 +220,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Testing Files
+format.docx
+sample-data.xlsx
+test_scenarios.txt
