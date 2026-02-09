@@ -6,6 +6,7 @@ Handles reading and processing data from CSV and Excel files.
 import pandas as pd
 from io import BytesIO
 from typing import List, Dict, Any, Tuple
+from num2words import num2words
 
 
 class DataHandler:
@@ -120,7 +121,16 @@ class DataHandler:
         # If no mapping provided, return as-is
         if not column_mapping:
             # Convert all values to strings
-            return [{k: self._format_value(v) for k, v in row.items()} for row in rows]
+            # Convert all values to strings
+            rows_processed = []
+            for row in rows:
+                new_row = {k: self._format_value(v) for k, v in row.items()}
+                # Magic: Generate _Words for any numeric column
+                for col, value in row.items():
+                    if isinstance(value, (int, float)) or (isinstance(value, str) and value.replace(',', '').replace('.', '', 1).isdigit()):
+                        new_row[f"{col}_Words"] = self._convert_to_words(value)
+                rows_processed.append(new_row)
+            return rows_processed
 
         # Apply column mapping
         mapped_rows = []
@@ -135,9 +145,45 @@ class DataHandler:
             for col in row:
                 if col not in mapped_row:
                     mapped_row[col] = self._format_value(row[col])
+            
+            # Magic: Generate _Words for any numeric column
+            # We iterate over the original row to find numeric values
+            for col, value in row.items():
+                # We check if it looks like a number
+                if isinstance(value, (int, float)) or (isinstance(value, str) and value.replace(',', '').replace('.', '', 1).isdigit()):
+                    mapped_row[f"{col}_Words"] = self._convert_to_words(value)
+                    
             mapped_rows.append(mapped_row)
 
         return mapped_rows
+
+    def _convert_to_words(self, value: Any) -> str:
+        """
+        Convert a numeric value to words using Indian English format.
+        
+        Args:
+            value: The value to convert
+            
+        Returns:
+            String representation in words, or empty string if not a number
+        """
+        try:
+            if pd.isna(value):
+                return ""
+            
+            # Helper to check if string is numeric (handling commas)
+            str_val = str(value).replace(',', '')
+            try:
+                num_val = float(str_val)
+            except ValueError:
+                return ""
+                
+            # Convert
+            words = num2words(num_val, lang='en_IN')
+            # User requirement: remove commas and title case
+            return words.replace(",", "").title()
+        except Exception:
+            return ""
 
     def _format_value(self, value: Any) -> str:
         """

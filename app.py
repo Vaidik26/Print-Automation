@@ -1942,6 +1942,7 @@ def render_sidebar():
         - Placeholders work in **tables** too
         - Headers & footers are supported
         - Use meaningful column for filenames
+        - **Number to Words**: Add `_Words` to any numeric column name to convert it to text (e.g., `{Amount}` → `{Amount_Words}`)
         """)
 
         st.markdown("---")
