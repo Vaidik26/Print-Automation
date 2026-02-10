@@ -1578,21 +1578,128 @@ def render_email_section():
             st.session_state.bcc_emails = bcc_emails
         
         
-        subject_template = st.text_input(
+        # Set defaults if empty
+        if not st.session_state.email_subject_template:
+            st.session_state.email_subject_template = "Document for {" + available_placeholders[0] + "}"
+        
+        if not st.session_state.email_body_template:
+            st.session_state.email_body_template = "Dear Recipient,\n\nPlease find your document attached.\n\nBest regards"
+        
+        st.text_input(
             "Email Subject",
-            value=st.session_state.email_subject_template or "Document for {" + available_placeholders[0] + "}",
+            key="email_subject_template",
             help="Use {placeholder} format",
         )
-        st.session_state.email_subject_template = subject_template
         
-        body_template = st.text_area(
+        st.text_area(
             "Email Body",
-            value=st.session_state.email_body_template or f"Dear Recipient,\n\nPlease find your document attached.\n\nBest regards",
+            key="email_body_template",
             height=200,
             help="Use {placeholder} format",
         )
-        st.session_state.email_body_template = body_template
+        st.caption("ℹ️ Changes are applied automatically when you click outside the text box.")
         
+        # Batch Attachment Section (New)
+        st.markdown("**📎 Batch Attachments (Map files to rows)**")
+        st.markdown(
+            """
+            <div class="info-box">
+                Upload multiple files and map them to rows based on a column value (e.g., matching '1001.pdf' to Order ID '1001').
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Initialize session state for batch attachments if not present
+        if "batch_attachments" not in st.session_state:
+            st.session_state.batch_attachments = {}
+        if "batch_mapping_column" not in st.session_state:
+            st.session_state.batch_mapping_column = None
+
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            batch_files = st.file_uploader(
+                "Upload Batch Files",
+                type=["pdf", "doc", "docx", "xls", "xlsx", "jpg", "png"],
+                accept_multiple_files=True,
+                help="Upload all files you want to attach. Filenames must match values in your data.",
+                key="batch_files_uploader"
+            )
+
+        with col2:
+            # Column selection for mapping
+            mapping_cols = ["-- Select Column --"] + columns
+            batch_col = st.selectbox(
+                "Match Filenames with Column",
+                options=mapping_cols,
+                help="Select the column that contains values matching your filenames (excluding extension)",
+                key="batch_mapping_col_select"
+            )
+            
+            # Prefix input
+            batch_prefix = st.text_input(
+                "Filename Prefix",
+                value="statement_",
+                help="Prefix expected in filenames (e.g., 'statement_' for files like 'statement_1001.pdf')"
+            )
+
+        # Process batch files
+        if batch_files and batch_col != "-- Select Column --":
+            st.session_state.batch_mapping_column = batch_col
+            
+            # Create mapping
+            mapping_results = {
+                "matched": 0,
+                "unmatched_files": [],
+                "rows_with_attachment": 0
+            }
+            
+            # Reset current mapping
+            st.session_state.batch_attachments = {}
+            
+            # Get valid rows (not skipped)
+            data_df = handler.df
+            valid_rows = [i for i in range(len(data_df)) if i not in st.session_state.skip_rows]
+            
+            # Create a lookup map: refined_value -> row_index
+            # We'll use string conversion and strip whitespace for matching
+            value_map = {}
+            for idx in valid_rows:
+                # Construct expected filename base: prefix + column_value
+                col_val = str(data_df.iloc[idx][batch_col]).strip()
+                if col_val:
+                    expected_base = (batch_prefix + col_val).strip()
+                    # Store match
+                    if expected_base not in value_map:
+                        value_map[expected_base] = idx
+
+            # Match files
+            import os
+            for file in batch_files:
+                # Get filename without extension
+                filename_base = os.path.splitext(file.name)[0].strip()
+                
+                if filename_base in value_map:
+                    row_idx = value_map[filename_base]
+                    # Store file connection: row_index -> (filename, file_bytes)
+                    st.session_state.batch_attachments[row_idx] = (file.name, file.read())
+                    mapping_results["matched"] += 1
+                else:
+                    mapping_results["unmatched_files"].append(file.name)
+            
+            mapping_results["rows_with_attachment"] = len(st.session_state.batch_attachments)
+            
+            # Display results
+            st.success(f"✅ Mapped {mapping_results['matched']} files to {mapping_results['rows_with_attachment']} rows!")
+            
+            if mapping_results["unmatched_files"]:
+                with st.expander(f"⚠️ {len(mapping_results['unmatched_files'])} Unmatched Files"):
+                    st.write(mapping_results["unmatched_files"])
+                    st.info(f"Tip: Ensure filenames start with '{batch_prefix}' and match the column values.")
+
+        st.markdown("---")
+
         # Common attachment section
         st.markdown("**📎 Common Attachment (Optional)**")
         st.markdown(
@@ -1637,8 +1744,8 @@ def render_email_section():
                 first_row_data = data_df.iloc[first_row_idx].to_dict()
                 
                 # Render templates
-                rendered_subject = EmailHandler.render_template(subject_template, first_row_data)
-                rendered_body = EmailHandler.render_template(body_template, first_row_data)
+                rendered_subject = EmailHandler.render_template(st.session_state.email_subject_template, first_row_data)
+                rendered_body = EmailHandler.render_template(st.session_state.email_body_template, first_row_data)
                 
                 st.markdown(f"**To:** {first_email}")
                 st.markdown(f"**Subject:** {rendered_subject}")
@@ -1678,10 +1785,9 @@ def render_email_section():
             else:
                 st.metric("📎 CC", 0)
         with col4:
-            if st.session_state.common_attachment:
-                st.metric("📄 Common File", "Yes")
-            else:
-                st.metric("📄 Common File", "No")
+            common_text = "Yes" if st.session_state.common_attachment else "No"
+            batch_count = len(st.session_state.batch_attachments) if "batch_attachments" in st.session_state else 0
+            st.metric("� Attachments", f"Common: {common_text} | Batch: {batch_count}")
         
         if total_sendable == 0:
             st.warning("⚠️ No recipients to send emails to. Please add valid emails or uncheck skip boxes.")
@@ -1707,6 +1813,7 @@ def render_email_section():
                     "Recipient Info": display_info,
                     "Email": valid_item["email"],
                     "Document": generated_docs[row_idx][0],
+                    "Batch File": st.session_state.batch_attachments[row_idx][0] if "batch_attachments" in st.session_state and row_idx in st.session_state.batch_attachments else "No",
                 })
             
             # Add manually filled emails
@@ -1725,6 +1832,7 @@ def render_email_section():
                     "Recipient Info": display_info,
                     "Email": manual_email,
                     "Document": generated_docs[row_idx][0],
+                    "Batch File": st.session_state.batch_attachments[row_idx][0] if "batch_attachments" in st.session_state and row_idx in st.session_state.batch_attachments else "No",
                 })
             
             # Display preview table
@@ -1781,15 +1889,25 @@ def render_email_section():
                                 continue
                             
                             row_data = data_df.iloc[row_idx].to_dict()
+                            
+                            # Prepare attachments list
+                            attachments = []
+                            if st.session_state.common_attachment:
+                                attachments.append(st.session_state.common_attachment)
+                            
+                            # Add batch attachment if exists for this row
+                            if "batch_attachments" in st.session_state and row_idx in st.session_state.batch_attachments:
+                                attachments.append(st.session_state.batch_attachments[row_idx])
+                            
                             email_data_list.append({
                                 "to_email": valid_item["email"],
-                                "subject": EmailHandler.render_template(subject_template, row_data),
-                                "body": EmailHandler.render_template(body_template, row_data),
+                                "subject": EmailHandler.render_template(st.session_state.email_subject_template, row_data),
+                                "body": EmailHandler.render_template(st.session_state.email_body_template, row_data),
                                 "attachment_filename": generated_docs[row_idx][0],
                                 "attachment_data": generated_docs[row_idx][1],
                                 "cc_emails": [e.strip() for e in st.session_state.cc_emails.split(',') if e.strip()] if st.session_state.cc_emails else None,
                                 "bcc_emails": [e.strip() for e in st.session_state.bcc_emails.split(',') if e.strip()] if st.session_state.bcc_emails else None,
-                                "additional_attachments": [st.session_state.common_attachment] if st.session_state.common_attachment else None,
+                                "additional_attachments": attachments if attachments else None,
                                 "row_index": row_idx,
                                 "recipient_info": " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in list(row_data.keys())[:3]]),
                             })
@@ -1802,15 +1920,25 @@ def render_email_section():
                                 continue
                             
                             row_data = data_df.iloc[row_idx].to_dict()
+                            
+                            # Prepare attachments list
+                            attachments = []
+                            if st.session_state.common_attachment:
+                                attachments.append(st.session_state.common_attachment)
+                            
+                            # Add batch attachment if exists for this row
+                            if "batch_attachments" in st.session_state and row_idx in st.session_state.batch_attachments:
+                                attachments.append(st.session_state.batch_attachments[row_idx])
+
                             email_data_list.append({
                                 "to_email": manual_email,
-                                "subject": EmailHandler.render_template(subject_template, row_data),
-                                "body": EmailHandler.render_template(body_template, row_data),
+                                "subject": EmailHandler.render_template(st.session_state.email_subject_template, row_data),
+                                "body": EmailHandler.render_template(st.session_state.email_body_template, row_data),
                                 "attachment_filename": generated_docs[row_idx][0],
                                 "attachment_data": generated_docs[row_idx][1],
                                 "cc_emails": [e.strip() for e in st.session_state.cc_emails.split(',') if e.strip()] if st.session_state.cc_emails else None,
                                 "bcc_emails": [e.strip() for e in st.session_state.bcc_emails.split(',') if e.strip()] if st.session_state.bcc_emails else None,
-                                "additional_attachments": [st.session_state.common_attachment] if st.session_state.common_attachment else None,
+                                "additional_attachments": attachments if attachments else None,
                                 "row_index": row_idx,
                                 "recipient_info": " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in list(row_data.keys())[:3]]),
                             })
