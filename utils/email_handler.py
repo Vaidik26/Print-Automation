@@ -36,7 +36,7 @@ class EmailHandler:
         self.smtp_port = smtp_port
         self.sender_email = sender_email
         self.sender_password = sender_password
-        self.sender_name = sender_name or sender_email
+        self.sender_name = sender_name if sender_name is not None else ""
 
     @staticmethod
     def validate_email(email: str) -> bool:
