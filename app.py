@@ -1878,112 +1878,113 @@ def render_email_section():
                 
                 col1, col2, col3 = st.columns([1, 2, 1])
                 with col2:
-                    if st.button("✅ Confirm & Send All Emails", type="primary", use_container_width=True):
-                        # Prepare email data
-                        email_data_list = []
-                        
-                        # Add valid emails
-                        for valid_item in results["valid"]:
-                            row_idx = valid_item["row_index"]
-                            if row_idx in st.session_state.skip_rows:
-                                continue
+                    if not st.session_state.email_send_results:
+                        if st.button("✅ Confirm & Send All Emails", type="primary", use_container_width=True):
+                            # Prepare email data
+                            email_data_list = []
                             
-                            row_data = data_df.iloc[row_idx].to_dict()
+                            # Add valid emails
+                            for valid_item in results["valid"]:
+                                row_idx = valid_item["row_index"]
+                                if row_idx in st.session_state.skip_rows:
+                                    continue
+                                
+                                row_data = data_df.iloc[row_idx].to_dict()
+                                
+                                # Prepare attachments list
+                                attachments = []
+                                if st.session_state.common_attachment:
+                                    attachments.append(st.session_state.common_attachment)
+                                
+                                # Add batch attachment if exists for this row
+                                if "batch_attachments" in st.session_state and row_idx in st.session_state.batch_attachments:
+                                    attachments.append(st.session_state.batch_attachments[row_idx])
+                                
+                                email_data_list.append({
+                                    "to_email": valid_item["email"],
+                                    "subject": EmailHandler.render_template(st.session_state.email_subject_template, row_data),
+                                    "body": EmailHandler.render_template(st.session_state.email_body_template, row_data),
+                                    "attachment_filename": generated_docs[row_idx][0],
+                                    "attachment_data": generated_docs[row_idx][1],
+                                    "cc_emails": [e.strip() for e in st.session_state.cc_emails.split(',') if e.strip()] if st.session_state.cc_emails else None,
+                                    "bcc_emails": [e.strip() for e in st.session_state.bcc_emails.split(',') if e.strip()] if st.session_state.bcc_emails else None,
+                                    "additional_attachments": attachments if attachments else None,
+                                    "row_index": row_idx,
+                                    "recipient_info": " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in list(row_data.keys())[:3]]),
+                                })
                             
-                            # Prepare attachments list
-                            attachments = []
-                            if st.session_state.common_attachment:
-                                attachments.append(st.session_state.common_attachment)
-                            
-                            # Add batch attachment if exists for this row
-                            if "batch_attachments" in st.session_state and row_idx in st.session_state.batch_attachments:
-                                attachments.append(st.session_state.batch_attachments[row_idx])
-                            
-                            email_data_list.append({
-                                "to_email": valid_item["email"],
-                                "subject": EmailHandler.render_template(st.session_state.email_subject_template, row_data),
-                                "body": EmailHandler.render_template(st.session_state.email_body_template, row_data),
-                                "attachment_filename": generated_docs[row_idx][0],
-                                "attachment_data": generated_docs[row_idx][1],
-                                "cc_emails": [e.strip() for e in st.session_state.cc_emails.split(',') if e.strip()] if st.session_state.cc_emails else None,
-                                "bcc_emails": [e.strip() for e in st.session_state.bcc_emails.split(',') if e.strip()] if st.session_state.bcc_emails else None,
-                                "additional_attachments": attachments if attachments else None,
-                                "row_index": row_idx,
-                                "recipient_info": " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in list(row_data.keys())[:3]]),
-                            })
-                        
-                        # Add manually filled emails
-                        for row_idx, manual_email in st.session_state.missing_emails.items():
-                            if row_idx in st.session_state.skip_rows:
-                                continue
-                            if not EmailHandler.validate_email(manual_email):
-                                continue
-                            
-                            row_data = data_df.iloc[row_idx].to_dict()
-                            
-                            # Prepare attachments list
-                            attachments = []
-                            if st.session_state.common_attachment:
-                                attachments.append(st.session_state.common_attachment)
-                            
-                            # Add batch attachment if exists for this row
-                            if "batch_attachments" in st.session_state and row_idx in st.session_state.batch_attachments:
-                                attachments.append(st.session_state.batch_attachments[row_idx])
+                            # Add manually filled emails
+                            for row_idx, manual_email in st.session_state.missing_emails.items():
+                                if row_idx in st.session_state.skip_rows:
+                                    continue
+                                if not EmailHandler.validate_email(manual_email):
+                                    continue
+                                
+                                row_data = data_df.iloc[row_idx].to_dict()
+                                
+                                # Prepare attachments list
+                                attachments = []
+                                if st.session_state.common_attachment:
+                                    attachments.append(st.session_state.common_attachment)
+                                
+                                # Add batch attachment if exists for this row
+                                if "batch_attachments" in st.session_state and row_idx in st.session_state.batch_attachments:
+                                    attachments.append(st.session_state.batch_attachments[row_idx])
 
-                            email_data_list.append({
-                                "to_email": manual_email,
-                                "subject": EmailHandler.render_template(st.session_state.email_subject_template, row_data),
-                                "body": EmailHandler.render_template(st.session_state.email_body_template, row_data),
-                                "attachment_filename": generated_docs[row_idx][0],
-                                "attachment_data": generated_docs[row_idx][1],
-                                "cc_emails": [e.strip() for e in st.session_state.cc_emails.split(',') if e.strip()] if st.session_state.cc_emails else None,
-                                "bcc_emails": [e.strip() for e in st.session_state.bcc_emails.split(',') if e.strip()] if st.session_state.bcc_emails else None,
-                                "additional_attachments": attachments if attachments else None,
-                                "row_index": row_idx,
-                                "recipient_info": " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in list(row_data.keys())[:3]]),
-                            })
-                        
-                        # Send emails with progress
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        
-                        def progress_callback(current, total, status):
-                            progress_bar.progress(current / total)
-                            status_text.text(f"{status} ({current}/{total})")
-                        
-                        email_handler = st.session_state.email_handler
-                        send_results = email_handler.send_batch_emails(
-                            email_data_list,
-                            progress_callback=progress_callback,
-                            delay_seconds=delay_seconds  # Use user-selected delay
-                        )
-                        
-                        progress_bar.empty()
-                        status_text.empty()
-                        
-                        # Store results with detailed info
-                        detailed_results = []
-                        for email_data in email_data_list:
-                            row_idx = email_data["row_index"]
-                            # Check if this email was in failed list
-                            failed_item = next((f for f in send_results["failed_details"] if f["row_index"] == row_idx), None)
+                                email_data_list.append({
+                                    "to_email": manual_email,
+                                    "subject": EmailHandler.render_template(st.session_state.email_subject_template, row_data),
+                                    "body": EmailHandler.render_template(st.session_state.email_body_template, row_data),
+                                    "attachment_filename": generated_docs[row_idx][0],
+                                    "attachment_data": generated_docs[row_idx][1],
+                                    "cc_emails": [e.strip() for e in st.session_state.cc_emails.split(',') if e.strip()] if st.session_state.cc_emails else None,
+                                    "bcc_emails": [e.strip() for e in st.session_state.bcc_emails.split(',') if e.strip()] if st.session_state.bcc_emails else None,
+                                    "additional_attachments": attachments if attachments else None,
+                                    "row_index": row_idx,
+                                    "recipient_info": " | ".join([f"{col}: {row_data.get(col, 'N/A')}" for col in list(row_data.keys())[:3]]),
+                                })
                             
-                            detailed_results.append({
-                                "Row": row_idx + 1,
-                                "Recipient Info": email_data["recipient_info"],
-                                "Email": email_data["to_email"],
-                                "Document": email_data["attachment_filename"],
-                                "Status": "❌ Failed" if failed_item else "✅ Sent",
-                                "Error": failed_item["error"] if failed_item else "",
-                            })
-                        
-                        st.session_state.email_send_results = {
-                            "summary": send_results,
-                            "details": detailed_results,
-                        }
-                        
-                        st.session_state.step = max(st.session_state.step, 6)
-                        st.rerun()
+                            # Send emails with progress
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            def progress_callback(current, total, status):
+                                progress_bar.progress(current / total)
+                                status_text.text(f"{status} ({current}/{total})")
+                            
+                            email_handler = st.session_state.email_handler
+                            send_results = email_handler.send_batch_emails(
+                                email_data_list,
+                                progress_callback=progress_callback,
+                                delay_seconds=delay_seconds  # Use user-selected delay
+                            )
+                            
+                            progress_bar.empty()
+                            status_text.empty()
+                            
+                            # Store results with detailed info
+                            detailed_results = []
+                            for email_data in email_data_list:
+                                row_idx = email_data["row_index"]
+                                # Check if this email was in failed list
+                                failed_item = next((f for f in send_results["failed_details"] if f["row_index"] == row_idx), None)
+                                
+                                detailed_results.append({
+                                    "Row": row_idx + 1,
+                                    "Recipient Info": email_data["recipient_info"],
+                                    "Email": email_data["to_email"],
+                                    "Document": email_data["attachment_filename"],
+                                    "Status": "❌ Failed" if failed_item else "✅ Sent",
+                                    "Error": failed_item["error"] if failed_item else "",
+                                })
+                            
+                            st.session_state.email_send_results = {
+                                "summary": send_results,
+                                "details": detailed_results,
+                            }
+                            
+                            st.session_state.step = max(st.session_state.step, 6)
+                            st.rerun()
         
         # Show results if available
         if st.session_state.email_send_results:
