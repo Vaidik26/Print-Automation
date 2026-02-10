@@ -76,6 +76,80 @@ class EmailHandler:
         except Exception as e:
             return False, f"❌ Connection failed: {str(e)}"
 
+    def create_message(
+        self,
+        to_email: str,
+        subject: str,
+        body: str,
+        attachment_filename: str,
+        attachment_data: bytes,
+        cc_emails: Optional[List[str]] = None,
+        bcc_emails: Optional[List[str]] = None,
+        additional_attachments: Optional[List[Tuple[str, bytes]]] = None,
+    ) -> EmailMessage:
+        """Create an EmailMessage object."""
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = formataddr((self.sender_name, self.sender_email))
+        msg["To"] = to_email
+        
+        # Add CC recipients
+        if cc_emails:
+            valid_cc = [email.strip() for email in cc_emails if email and email.strip()]
+            if valid_cc:
+                msg["Cc"] = ", ".join(valid_cc)
+        
+        # Add BCC recipients
+        if bcc_emails:
+            valid_bcc = [email.strip() for email in bcc_emails if email and email.strip()]
+            if valid_bcc:
+                msg["Bcc"] = ", ".join(valid_bcc)
+        
+        msg.set_content(body)
+
+        # Add primary attachment (personalized document)
+        msg.add_attachment(
+            attachment_data,
+            maintype="application",
+            subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename=attachment_filename,
+        )
+        
+        # Add additional common attachments
+        if additional_attachments:
+            for filename, data in additional_attachments:
+                # Detect file type from extension
+                if filename.lower().endswith('.pdf'):
+                    msg.add_attachment(
+                        data,
+                        maintype="application",
+                        subtype="pdf",
+                        filename=filename,
+                    )
+                elif filename.lower().endswith(('.doc', '.docx')):
+                    msg.add_attachment(
+                        data,
+                        maintype="application",
+                        subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        filename=filename,
+                    )
+                elif filename.lower().endswith(('.xls', '.xlsx')):
+                    msg.add_attachment(
+                        data,
+                        maintype="application",
+                        subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        filename=filename,
+                    )
+                else:
+                    # Generic binary attachment
+                    msg.add_attachment(
+                        data,
+                        maintype="application",
+                        subtype="octet-stream",
+                        filename=filename,
+                    )
+        return msg
+
     def send_personalized_email(
         self,
         to_email: str,
@@ -89,82 +163,12 @@ class EmailHandler:
     ) -> Tuple[bool, str]:
         """
         Send a single personalized email with attachment(s).
-
-        Args:
-            to_email: Recipient email address
-            subject: Email subject
-            body: Email body (plain text)
-            attachment_filename: Name of the primary attachment file
-            attachment_data: Binary data of the primary attachment
-            cc_emails: Optional list of CC email addresses
-            bcc_emails: Optional list of BCC email addresses
-            additional_attachments: Optional list of (filename, data) tuples for common attachments
-
-        Returns:
-            Tuple of (success: bool, error_message: str or empty)
         """
         try:
-            # Create message
-            msg = EmailMessage()
-            msg["Subject"] = subject
-            msg["From"] = formataddr((self.sender_name, self.sender_email))
-            msg["To"] = to_email
-            
-            # Add CC recipients
-            if cc_emails:
-                valid_cc = [email.strip() for email in cc_emails if email and email.strip()]
-                if valid_cc:
-                    msg["Cc"] = ", ".join(valid_cc)
-            
-            # Add BCC recipients
-            if bcc_emails:
-                valid_bcc = [email.strip() for email in bcc_emails if email and email.strip()]
-                if valid_bcc:
-                    msg["Bcc"] = ", ".join(valid_bcc)
-            
-            msg.set_content(body)
-
-            # Add primary attachment (personalized document)
-            msg.add_attachment(
-                attachment_data,
-                maintype="application",
-                subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
-                filename=attachment_filename,
+            msg = self.create_message(
+                to_email, subject, body, attachment_filename, attachment_data,
+                cc_emails, bcc_emails, additional_attachments
             )
-            
-            # Add additional common attachments
-            if additional_attachments:
-                for filename, data in additional_attachments:
-                    # Detect file type from extension
-                    if filename.lower().endswith('.pdf'):
-                        msg.add_attachment(
-                            data,
-                            maintype="application",
-                            subtype="pdf",
-                            filename=filename,
-                        )
-                    elif filename.lower().endswith(('.doc', '.docx')):
-                        msg.add_attachment(
-                            data,
-                            maintype="application",
-                            subtype="vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            filename=filename,
-                        )
-                    elif filename.lower().endswith(('.xls', '.xlsx')):
-                        msg.add_attachment(
-                            data,
-                            maintype="application",
-                            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            filename=filename,
-                        )
-                    else:
-                        # Generic binary attachment
-                        msg.add_attachment(
-                            data,
-                            maintype="application",
-                            subtype="octet-stream",
-                            filename=filename,
-                        )
 
             # Send email
             with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30) as server:
@@ -190,26 +194,7 @@ class EmailHandler:
         delay_seconds: float = 1.5,
     ) -> Dict[str, any]:
         """
-        Send multiple personalized emails with progress tracking.
-
-        Args:
-            email_data_list: List of dicts with keys:
-                - 'to_email': recipient email
-                - 'subject': email subject
-                - 'body': email body
-                - 'attachment_filename': attachment filename
-                - 'attachment_data': attachment binary data
-                - 'row_index': original row index (for tracking)
-            progress_callback: Optional callback function(current, total, status)
-            delay_seconds: Delay between emails to avoid rate limiting
-
-        Returns:
-            Dict with results:
-                - 'total': total emails
-                - 'sent': successfully sent count
-                - 'failed': failed count
-                - 'skipped': skipped count
-                - 'failed_details': list of failed email details
+        Send multiple personalized emails reusing the SMTP connection.
         """
         results = {
             "total": len(email_data_list),
@@ -219,43 +204,62 @@ class EmailHandler:
             "failed_details": [],
         }
 
-        for idx, email_data in enumerate(email_data_list):
-            # Update progress
-            if progress_callback:
-                progress_callback(
-                    idx + 1,
-                    len(email_data_list),
-                    f"Sending to {email_data['to_email']}...",
-                )
+        try:
+            # Connect once for the batch
+            with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30) as server:
+                server.starttls()
+                server.login(self.sender_email, self.sender_password)
+                
+                for idx, email_data in enumerate(email_data_list):
+                    # Update progress
+                    if progress_callback:
+                        progress_callback(
+                            idx + 1,
+                            len(email_data_list),
+                            f"Sending to {email_data['to_email']}...",
+                        )
 
-            # Send email
-            success, error_msg = self.send_personalized_email(
-                to_email=email_data["to_email"],
-                subject=email_data["subject"],
-                body=email_data["body"],
-                attachment_filename=email_data["attachment_filename"],
-                attachment_data=email_data["attachment_data"],
-                cc_emails=email_data.get("cc_emails"),
-                bcc_emails=email_data.get("bcc_emails"),
-                additional_attachments=email_data.get("additional_attachments"),
-            )
+                    try:
+                        # Create message
+                        msg = self.create_message(
+                            to_email=email_data["to_email"],
+                            subject=email_data["subject"],
+                            body=email_data["body"],
+                            attachment_filename=email_data["attachment_filename"],
+                            attachment_data=email_data["attachment_data"],
+                            cc_emails=email_data.get("cc_emails"),
+                            bcc_emails=email_data.get("bcc_emails"),
+                            additional_attachments=email_data.get("additional_attachments"),
+                        )
+                        
+                        # Send using existing connection
+                        server.send_message(msg)
+                        results["sent"] += 1
+                        
+                    except Exception as e:
+                        results["failed"] += 1
+                        results["failed_details"].append(
+                            {
+                                "row_index": email_data.get("row_index", idx),
+                                "email": email_data["to_email"],
+                                "error": str(e),
+                            }
+                        )
+                        # If connection drops, we might want to try reconnecting, 
+                        # but for now we'll just log failure to keep it simple and safe.
 
-            if success:
-                results["sent"] += 1
-            else:
-                results["failed"] += 1
-                results["failed_details"].append(
-                    {
-                        "row_index": email_data.get("row_index", idx),
-                        "email": email_data["to_email"],
-                        "error": error_msg,
-                    }
-                )
-
-            # Delay to avoid rate limiting (except for last email)
-            if idx < len(email_data_list) - 1:
-                time.sleep(delay_seconds)
-
+                    # Delay to avoid rate limiting (except for last email)
+                    if idx < len(email_data_list) - 1:
+                        time.sleep(delay_seconds)
+                        
+        except Exception as e:
+            # Global connection error handling
+            # If the main connection fails, mark remaining as failed or handle appropriately
+            # For simplicity, we'll mark the rest as failed if we can't even connect
+            remaining = len(email_data_list) - (results["sent"] + results["failed"])
+            results["failed"] += remaining
+            results["failed_details"].append({"row_index": -1, "email": "Global Batch Error", "error": f"Connection failed: {str(e)}"})
+            
         return results
 
     @staticmethod
