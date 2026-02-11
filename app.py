@@ -914,9 +914,12 @@ def render_email_section():
         render_nav_buttons(4, can_proceed=False, show_next=False)
         return
 
+
+    # Render unified email/DocuSign section
     render_smtp_email_section()
+
     
-    # Navigation buttons
+    # Navigation buttons (common for both)
     render_nav_buttons(4, can_proceed=False, show_next=False)
 
 
@@ -924,6 +927,16 @@ def render_smtp_email_section():
     """Render the SMTP Email sending interface."""
     handler = st.session_state.data_handler
     data_df = handler.df
+    generated_docs = st.session_state.generated_docs
+    
+    # Show only DocuSign section with all SMTP fields integrated
+    render_docusign_logic()
+    
+    return  # Exit early since we've handled everything
+
+
+def render_smtp_only_section():
+    """Render SMTP email section only (extracted from render_smtp_email_section)"""
     generated_docs = st.session_state.generated_docs
     
     # Initialize session state for email handler
@@ -1526,6 +1539,344 @@ def main():
         render_generate_section()
     elif current_tab == 4:
         render_email_section()
+
+
+
+from utils.docusign_handler import DocuSignHandler
+import os
+
+def render_docusign_logic():
+    """Render the DocuSign specific logic."""
+    st.info("ℹ️ Send documents for signature via DocuSign (using your Email & Attachments).")
+    
+    if "docusign_results" not in st.session_state:
+        st.session_state.docusign_results = None
+
+    # Credentials Section
+    has_key_file = os.path.exists("docusign_key.txt")
+    
+    # Auto-parse credentials if file exists and not yet set
+    default_ik = ""
+    default_uid = ""
+    default_aid = ""
+    default_base = "https://demo.docusign.net"
+
+    if has_key_file:
+        try:
+            with open("docusign_key.txt", "r") as f:
+                content = f.read()
+                for line in content.splitlines():
+                    if "Integration Key =" in line: default_ik = line.split("=")[1].strip()
+                    if "User ID =" in line: default_uid = line.split("=")[1].strip()
+                    if "API Account ID =" in line: default_aid = line.split("=")[1].strip()
+                    # if "Account Base URI =" in line: default_base = line.split("=")[1].strip() 
+                    # Note: We intentionally IGNORE the file's base URI because it often defaults to Prod (na4)
+                    # even for Developer keys. We stick to demo unless user changes it.
+        except:
+            pass
+            
+    with st.expander("🔑 DocuSign Credentials", expanded=True):
+        if has_key_file:
+            st.success("✅ 'docusign_key.txt' found and parsed.")
+        else:
+            st.error("❌ 'docusign_key.txt' missing. Please create it with your Private Key.")
+            
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.ds_integration_key = st.text_input("Integration Key", value=st.session_state.get("ds_integration_key", default_ik))
+            st.session_state.ds_user_id = st.text_input("User ID", value=st.session_state.get("ds_user_id", default_uid))
+        with col2:
+            st.session_state.ds_account_id = st.text_input("API Account ID", value=st.session_state.get("ds_account_id", default_aid))
+            
+            # Smart default: If session has nothing, use demo. 
+            current_base = st.session_state.get("ds_base_url", default_base)
+            st.session_state.ds_base_url = st.text_input("Base URL", value=current_base, help="Use 'https://demo.docusign.net' for Developer Sandbox accounts.")
+            
+            if "na" in st.session_state.ds_base_url and "demo" not in st.session_state.ds_base_url:
+                st.warning("⚠️ You are using a Production URL. New integrations usually require 'https://demo.docusign.net'.")
+
+    # SMTP Configuration Section
+    st.markdown("---")
+    with st.expander("📧 SMTP Email Configuration", expanded=True):
+        st.info("DocuSign will generate signing links and send them via your email server.")
+        col1, col2 = st.columns(2)
+        with col1:
+            smtp_server = st.text_input("SMTP Server", value=st.session_state.get("smtp_server", "smtp.gmail.com"))
+            smtp_port = st.number_input("SMTP Port", value=st.session_state.get("smtp_port", 587), min_value=1, max_value=65535)
+            sender_email = st.text_input("Sender Email", value=st.session_state.get("sender_email", ""))
+        with col2:
+            sender_name = st.text_input("Sender Name", value=st.session_state.get("sender_name", ""))
+            sender_password = st.text_input("App Password", type="password", help="Use App Password for Gmail", value=st.session_state.get("sender_password", ""))
+        
+        # Store values in session state
+        st.session_state.smtp_server = smtp_server
+        st.session_state.smtp_port = smtp_port
+        st.session_state.sender_email = sender_email
+        st.session_state.sender_name = sender_name
+        st.session_state.sender_password = sender_password
+        
+        # Test connection button
+        if st.button("🔌 Connect & Verify SMTP", key="test_smtp_ds"):
+            if not (sender_email and sender_password):
+                st.error("❌ Please provide email and password")
+            else:
+                try:
+                    from utils.email_handler import EmailHandler
+                    handler_obj = EmailHandler(smtp_server, smtp_port, sender_email, sender_password, sender_name)
+                    success, msg = handler_obj.test_connection()
+                    if success:
+                        st.success(f"✅ {msg}")
+                        st.session_state.email_handler = handler_obj
+                        st.session_state.email_configured = True
+                    else:
+                        st.error(f"❌ {msg}")
+                except Exception as e:
+                    st.error(f"❌ Connection failed: {str(e)}")
+
+    # Batch File Mapping Section (moved below email body, expanded by default)
+    st.markdown("---")
+    st.markdown("### 📎 Batch File Attachments")
+    st.info("Upload files that will be attached to specific recipients based on filename matching. Each recipient gets only their matched file(s).")
+    
+    if True:  # Always show, not in expander
+        if "data_handler" in st.session_state and st.session_state.data_handler is not None:
+            data_df = st.session_state.data_handler.df
+            available_columns = data_df.columns.tolist()
+            
+            # Batch file configuration
+            batch_files = st.file_uploader("Upload Batch Files", accept_multiple_files=True, key="ds_batch_files", 
+                                          help="Files will be matched to recipients based on the filename column you select below")
+            
+            if batch_files:
+                col1, col2 = st.columns(2)
+                with col1:
+                    batch_filename_col = st.selectbox("Filename Column (for matching)", options=available_columns, 
+                                                     help="Column containing values that match your batch filenames")
+                with col2:
+                    batch_prefix = st.text_input("Filename Prefix (optional)", placeholder="e.g., 'invoice_'",
+                                                help="If your files have a prefix like 'invoice_001.pdf', enter 'invoice_'")
+                
+                if st.button("🔗 Map Batch Files", key="map_batch_ds"):
+                    # Initialize batch_attachments if not present
+                    if "batch_attachments" not in st.session_state:
+                        st.session_state.batch_attachments = {}
+                    
+                    # Create mapping dictionary
+                    mapping_dict = {}
+                    for idx, row in data_df.iterrows():
+                        key_value = str(row[batch_filename_col]).strip().lower()
+                        mapping_dict[key_value] = idx
+                    
+                    # Match files
+                    matched_count = 0
+                    for uploaded_file in batch_files:
+                        clean_name = uploaded_file.name.lower().replace(" ", "").split(".")[0]
+                        
+                        # Strip prefix if provided
+                        candidate_name = clean_name
+                        if batch_prefix and batch_prefix.lower() in candidate_name:
+                            if candidate_name.startswith(batch_prefix.lower()):
+                                candidate_name = candidate_name[len(batch_prefix):]
+                        
+                        if candidate_name in mapping_dict:
+                            matched_row_idx = mapping_dict[candidate_name]
+                            if matched_row_idx not in st.session_state.batch_attachments:
+                                st.session_state.batch_attachments[matched_row_idx] = []
+                            st.session_state.batch_attachments[matched_row_idx].append((uploaded_file.name, uploaded_file.getvalue()))
+                            matched_count += 1
+                    
+                    if matched_count > 0:
+                        st.success(f"✅ Mapped {matched_count} files to {len(st.session_state.batch_attachments)} recipients!")
+                    else:
+                        st.warning("⚠️ No files matched. Check your filename column and prefix settings.")
+        else:
+            st.warning("Please upload data in the Data step first.")
+
+    # Mapping Section
+    st.markdown("### 🔗 Recipient Mapping & Email Config")
+    st.markdown("_This uses your Email Configuration (SMTP) to send the signing link._")
+    
+    if "data_handler" not in st.session_state or st.session_state.data_handler is None:
+         st.warning("Please upload data first.")
+         return
+
+    data_df = st.session_state.data_handler.df
+    available_columns = data_df.columns.tolist()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        recipient_email_col = st.selectbox("Recipient Email Column", options=available_columns, key="ds_email_col", index=available_columns.index("Email") if "Email" in available_columns else 0)
+    with col2:
+        recipient_name_col = st.selectbox("Recipient Name Column", options=available_columns, key="ds_name_col", index=available_columns.index("Name") if "Name" in available_columns else 0)
+
+    # CC/BCC (moved above subject)
+    col_em1, col_em2 = st.columns(2)
+    with col_em1:
+        ds_cc_emails = st.text_input("CC (Optional)", placeholder="email1@example.com, email2@example.com")
+    with col_em2:
+        ds_bcc_emails = st.text_input("BCC (Optional)", placeholder="email1@example.com, email2@example.com")
+    
+    # Email Subject/Body
+    ds_email_subject = st.text_input("Email Subject", value="Action Required: Please Sign Document {Filename}", help="Placeholders: {Filename}, {Name}")
+    ds_email_body = st.text_area("Email Body", value="Dear {Name},\n\nPlease review and sign the attached document by clicking the link below:\n\n{Signing_Link}\n\nBest regards,", height=150)
+    st.caption("ℹ️ The `{Signing_Link}` placeholder will be replaced by the unique DocuSign link.")
+    
+    # Common attachments
+    st.markdown("**📂 Common Attachments**")
+    ds_additional_files = st.file_uploader("Attach extra files to all emails", accept_multiple_files=True, help="These files will be attached to every email")
+
+    # Sending Logic
+    st.markdown("---")
+    
+    if st.session_state.docusign_results:
+        # Show Results
+        results = st.session_state.docusign_results
+        col1, col2 = st.columns(2)
+        with col1: st.metric("✅ Sent", results["sent"])
+        with col2: st.metric("❌ Failed", results["failed"])
+             
+        if results["details"]:
+            st.dataframe(results["details"], use_container_width=True)
+            
+        if st.button("🔄 Send New Batch", key="reset_ds"):
+            st.session_state.docusign_results = None
+            st.rerun()
+            
+    else:
+        # Send Button 
+        if st.button("🚀 Generate Links & Send Emails", type="primary", use_container_width=True):
+            if not has_key_file:
+                st.error("Missing Private Key file.")
+                return
+
+            # Check SMTP configuration
+            if not st.session_state.get("email_configured") or not st.session_state.get("email_handler"):
+                st.error("⚠️ Please configure and connect SMTP Email first (in the 'Send via Email' tab).")
+                return
+
+            email_handler = st.session_state.email_handler
+
+            # Init DocuSign
+            try:
+                ds_handler = DocuSignHandler(
+                    st.session_state.ds_integration_key,
+                    st.session_state.ds_user_id,
+                    st.session_state.ds_account_id,
+                    "docusign_key.txt", 
+                    st.session_state.ds_base_url
+                )
+            except Exception as e:
+                st.error(f"DocuSign Init Error: {str(e)}")
+                return
+            
+            st.success("✅ Connected to DocuSign! Processing...")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            results = {"sent": 0, "failed": 0, "details": []}
+            generated_docs = st.session_state.generated_docs
+            total_docs = len(generated_docs)
+            
+            # Prepare common attachments
+            common_attachments = []
+            if ds_additional_files:
+                for f in ds_additional_files:
+                    common_attachments.append((f.name, f.read()))
+
+            # Parse CC/BCC
+            cc_list = [e.strip() for e in ds_cc_emails.split(",")] if ds_cc_emails else []
+            bcc_list = [e.strip() for e in ds_bcc_emails.split(",")] if ds_bcc_emails else []
+
+            for i, (filename, file_data) in enumerate(generated_docs):
+                progress_bar.progress((i + 1) / total_docs)
+                status_text.text(f"Processing {i+1}/{total_docs}: {filename}...")
+                
+                if i < len(data_df):
+                    row = data_df.iloc[i]
+                    rec_email = str(row[recipient_email_col]).strip()
+                    rec_name = str(row[recipient_name_col]).strip()
+                    
+                    # Debug: Show which recipient is being processed
+                    status_text.text(f"Processing {i+1}/{total_docs}: {filename} → {rec_name} ({rec_email})")
+                    
+                    if not rec_email or "@" not in rec_email:
+                        results["failed"] += 1
+                        results["details"].append({"File": filename, "Status": "❌ Skipped", "Error": "Invalid Email"})
+                        continue
+                        
+                    try:
+                        # 1. Get Signing Link from DocuSign
+                        signing_url, envelope_id = ds_handler.get_signing_link(
+                            rec_email, rec_name, filename, file_data
+                        )
+                        
+                        # 2. Prepare Email Content with formatted link
+                        final_subject = ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name)
+                        
+                        # Format the signing link as HTML for better presentation
+                        signing_link_html = f'<a href="{signing_url}" style="display:inline-block;padding:10px 20px;background-color:#0078d4;color:white;text-decoration:none;border-radius:4px;">Click here to sign</a>'
+                        
+                        # Replace placeholder with formatted link
+                        final_body = ds_email_body.replace("{Name}", rec_name).replace("{Signing_Link}", signing_link_html)
+                        
+                        # 3. Handle Batch Attachments - Fixed mapping logic with correct row index
+                        current_attachments = common_attachments.copy()
+                        
+                        # CRITICAL FIX: Find the actual row index in data_df that matches this recipient
+                        # The loop variable 'i' is the index in generated_docs, NOT the row index in data_df
+                        actual_row_idx = None
+                        for row_idx in range(len(data_df)):
+                            if (str(data_df.iloc[row_idx][recipient_email_col]).strip() == rec_email and 
+                                str(data_df.iloc[row_idx][recipient_name_col]).strip() == rec_name):
+                                actual_row_idx = row_idx
+                                break
+                        
+                        # Check for batch attachments using the ACTUAL row index
+                        if actual_row_idx is not None and "batch_attachments" in st.session_state and st.session_state.batch_attachments:
+                            if isinstance(st.session_state.batch_attachments, dict):
+                                if actual_row_idx in st.session_state.batch_attachments:
+                                    batch_files = st.session_state.batch_attachments[actual_row_idx]
+                                    if isinstance(batch_files, list):
+                                        current_attachments.extend(batch_files)
+                                        # Debug: show which files are being attached
+                                        batch_names = [f[0] for f in batch_files]
+                                        status_text.text(f"Processing {i+1}/{total_docs}: {filename} → {rec_name} (+ {len(batch_files)} batch: {', '.join(batch_names)})")
+                            # Alternative: if it's stored as a list indexed by row
+                            elif isinstance(st.session_state.batch_attachments, list):
+                                if actual_row_idx < len(st.session_state.batch_attachments):
+                                    batch_files = st.session_state.batch_attachments[actual_row_idx]
+                                    if batch_files:
+                                        current_attachments.extend(batch_files)
+
+                        # 4. Send Email via SMTP
+                        success, msg = email_handler.send_personalized_email(
+                            to_email=rec_email, 
+                            subject=final_subject, 
+                            body=final_body, 
+                            attachment_filename=f"Review_Copy_{filename}", 
+                            attachment_data=file_data,
+                            cc_emails=cc_list,
+                            bcc_emails=bcc_list,
+                            additional_attachments=current_attachments
+                        )
+
+                        if success:
+                            results["sent"] += 1
+                            results["details"].append({"File": filename, "Status": "✅ Sent", "Envelope ID": envelope_id})
+                        else:
+                            results["failed"] += 1
+                            results["details"].append({"File": filename, "Status": "❌ Email Failed", "Error": msg})
+                            
+                    except Exception as e:
+                        results["failed"] += 1
+                        results["details"].append({"File": filename, "Status": "❌ DocuSign Error", "Error": str(e)})
+
+                    if i < total_docs - 1:
+                        import time
+                        time.sleep(0.5)  # Reduced from 1.5s for better performance 
+                
+            st.session_state.docusign_results = results
+            st.rerun()
 
 
 if __name__ == "__main__":

@@ -105,7 +105,15 @@ class EmailHandler:
             if valid_bcc:
                 msg["Bcc"] = ", ".join(valid_bcc)
         
+        
+        # Set plain text content as fallback
         msg.set_content(body)
+        
+        # Add HTML version if body contains HTML tags
+        if '<' in body and '>' in body:
+            # Convert newlines to <br> for HTML rendering
+            html_body = body.replace('\n', '<br>')
+            msg.add_alternative(html_body, subtype='html')
 
         # Add primary attachment (personalized document)
         msg.add_attachment(
