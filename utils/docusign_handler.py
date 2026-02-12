@@ -52,12 +52,38 @@ class DocuSignHandler:
             )
             
             self.access_token = token_response.access_token
-            # self.api_client.set_default_header("Authorization", "Bearer " + self.access_token)
             
-            # Very important: Update base path based on account info (though we passed it, good to verify)
-            # For simplicity, we stick to the provided base_url + /restapi
-            self.api_client.host = self.base_url + "/restapi"
+            # Fetch the correct base URI for the account
+            # We use requests directly to ensure we hit the correct OAuth host
+            try:
+                user_info_url = f"https://{self.api_client.oauth_host_name}/oauth/userinfo"
+                response = requests.get(
+                    user_info_url,
+                    headers={"Authorization": "Bearer " + self.access_token}
+                )
+                # response.raise_for_status() # Optional: ignore if we want to fallback
+                
+                if response.status_code == 200:
+                    user_info = response.json()
+                    accounts = user_info.get('accounts', [])
+                    target_account = next((acc for acc in accounts if acc['account_id'] == self.account_id), None)
+                    
+                    if target_account:
+                        self.base_url = target_account['base_uri']
+                        self.api_client.host = self.base_url + "/restapi"
+                    else:
+                        # Fallback
+                        self.api_client.host = self.base_url + "/restapi"
+                else:
+                    self.api_client.host = self.base_url + "/restapi"
+
+            except Exception as e:
+                # Fallback if discovery fails
+                self.api_client.host = self.base_url + "/restapi"
+                
             self.api_client.set_default_header("Authorization", "Bearer " + self.access_token)
+
+            return True
 
             return True
 
@@ -123,13 +149,16 @@ class DocuSignHandler:
         envelope_id = results.envelope_id
         
         # 3. Generate Signing Link (Recipient View)
+        # Revert to dictionary approach - safer with Python SDK dynamic typing
+        # authenticationMethod must match what DocuSign expects (email, sso, etc)
+        # clientUserId MUST match the clientUserId in the signer definition
         recipient_view_request = {
             "authenticationMethod": "email",
-            "clientUserId": signer_email,
+            "clientUserId": str(signer_email),
             "recipientId": "1",
-            "returnUrl": "https://www.google.com", # Redirect after signing
-            "userName": signer_name,
-            "email": signer_email
+            "returnUrl": "https://www.google.com",
+            "userName": str(signer_name),
+            "email": str(signer_email)
         }
         
         view_results = envelopes_api.create_recipient_view(

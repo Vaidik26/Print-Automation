@@ -1758,12 +1758,18 @@ def render_docusign_logic():
 
             # Init DocuSign
             try:
+              # Use session state to store credentials
+                ds_integration_key = st.session_state.get("ds_integration_key", "f588bd38-c3ac-428b-a6be-b9efbde23a5a")
+                ds_user_id = st.session_state.get("ds_user_id", "c1370aa2-d90e-493e-a329-b2ef724105a5")
+                ds_account_id = st.session_state.get("ds_account_id", "516db58d-941b-4954-a0b1-19c9723f07fb")
+                # Base URL from screenshot is https://demo.docusign.net
+                ds_base_url = st.session_state.get("ds_base_url", "https://demo.docusign.net") # Default to Demo.ds_base_url
                 ds_handler = DocuSignHandler(
-                    st.session_state.ds_integration_key,
-                    st.session_state.ds_user_id,
-                    st.session_state.ds_account_id,
+                    ds_integration_key,
+                    ds_user_id,
+                    ds_account_id,
                     "docusign_key.txt", 
-                    st.session_state.ds_base_url
+                    ds_base_url
                 )
             except Exception as e:
                 st.error(f"DocuSign Init Error: {str(e)}")
@@ -1869,7 +1875,22 @@ def render_docusign_logic():
                             
                     except Exception as e:
                         results["failed"] += 1
-                        results["details"].append({"File": filename, "Status": "❌ DocuSign Error", "Error": str(e)})
+                        error_msg = str(e)
+                        
+                        # Extract and format fuller error details
+                        full_error_details = error_msg
+                        if hasattr(e, 'body'):
+                            try:
+                                body_str = e.body.decode('utf-8') if isinstance(e.body, bytes) else str(e.body)
+                                full_error_details += f"\nAPI Response Body: {body_str}"
+                            except:
+                                full_error_details += f"\nAPI Response Body: {e.body}"
+                        
+                        # Show error immediately in UI for debugging
+                        with st.expander(f"❌ Error detailed for {filename}", expanded=True):
+                            st.code(full_error_details, language="text")
+                            
+                        results["details"].append({"File": filename, "Status": "❌ DocuSign Error", "Error": error_msg[:100] + "..."})
 
                     if i < total_docs - 1:
                         import time
