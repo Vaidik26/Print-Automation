@@ -1553,7 +1553,9 @@ def render_docusign_logic():
         st.session_state.docusign_results = None
 
     # Credentials Section
-    has_key_file = os.path.exists("docusign_key.txt")
+    # Use absolute path relative to app.py
+    key_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docusign_key.txt")
+    has_key_file = os.path.exists(key_file_path)
     
     # Auto-parse credentials if file exists and not yet set
     default_ik = ""
@@ -1563,7 +1565,7 @@ def render_docusign_logic():
 
     if has_key_file:
         try:
-            with open("docusign_key.txt", "r") as f:
+            with open(key_file_path, "r") as f:
                 content = f.read()
                 for line in content.splitlines():
                     if "Integration Key =" in line: default_ik = line.split("=")[1].strip()
@@ -1768,7 +1770,7 @@ def render_docusign_logic():
                     ds_integration_key,
                     ds_user_id,
                     ds_account_id,
-                    "docusign_key.txt", 
+                    key_file_path, 
                     ds_base_url
                 )
             except Exception as e:
