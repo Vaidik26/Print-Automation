@@ -914,9 +914,22 @@ def render_email_section():
         render_nav_buttons(4, can_proceed=False, show_next=False)
         return
 
-    render_smtp_email_section()
+    # Toggle between Email and DocuSign
+    send_mode = st.radio(
+        "Select Action:", 
+        ["📧 Send via Email (SMTP)", "✍️ Send for Signature (DocuSign)"], 
+        horizontal=True,
+        help="Choose 'Email' to send documents as attachments. Choose 'DocuSign' to request e-signatures."
+    )
+
+    if send_mode == "📧 Send via Email (SMTP)":
+        render_smtp_email_section()
+    else:
+        render_docusign_logic()
     
-    # Navigation buttons
+    # Navigation buttons (only if not in DocuSign mode, as that has its own flow/buttons usually)
+    # But for consistency we can keep them at bottom or let the sub-functions handle it.
+    # Current implementation of sub-functions ends with content, no nav.
     render_nav_buttons(4, can_proceed=False, show_next=False)
 
 
@@ -1537,7 +1550,7 @@ import os
 
 def render_docusign_logic():
     """Render the DocuSign specific logic."""
-    st.info("ℹ️ Send documents for signature via DocuSign (using your Email & Attachments).")
+    st.markdown("### ✍️ DocuSign Integration")
     
     if "docusign_results" not in st.session_state:
         st.session_state.docusign_results = None
