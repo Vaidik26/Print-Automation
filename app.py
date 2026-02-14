@@ -1787,11 +1787,13 @@ def render_docusign_logic():
                     # Create mapping dictionary from DATA
                     mapping_dict = {}
                     debug_keys = []
-                    for idx, row in data_df.iterrows():
+                    for i, (idx, row) in enumerate(data_df.iterrows()):
                         # We use the raw value from the column to match against
                         original_val = str(row[batch_filename_col]).strip()
                         # We also store a lower-case version for case-insensitive matching
-                        mapping_dict[original_val.lower()] = idx
+                        # IMPORTANT: Mapping to Integer Index (i), not Label Index (idx)
+                        # because generated_docs and sending loop iterate by integer index
+                        mapping_dict[original_val.lower()] = i 
                         debug_keys.append(original_val)
                     
                     # Match files
