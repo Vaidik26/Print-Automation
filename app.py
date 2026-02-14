@@ -1781,38 +1781,66 @@ def render_docusign_logic():
                                                 help="If your files have a prefix like 'invoice_001.pdf', enter 'invoice_'")
                 
                 if st.button("🔗 Map Batch Files", key="map_batch_ds"):
-                    # Initialize batch_attachments if not present
-                    if "batch_attachments" not in st.session_state:
-                        st.session_state.batch_attachments = {}
+                    # Initialize batch_attachments (clear previous)
+                    st.session_state.batch_attachments = {}
                     
-                    # Create mapping dictionary
+                    # Create mapping dictionary from DATA
                     mapping_dict = {}
+                    debug_keys = []
                     for idx, row in data_df.iterrows():
-                        key_value = str(row[batch_filename_col]).strip().lower()
-                        mapping_dict[key_value] = idx
+                        # We use the raw value from the column to match against
+                        original_val = str(row[batch_filename_col]).strip()
+                        # We also store a lower-case version for case-insensitive matching
+                        mapping_dict[original_val.lower()] = idx
+                        debug_keys.append(original_val)
                     
                     # Match files
                     matched_count = 0
+                    failed_files = []
+                    
                     for uploaded_file in batch_files:
-                        clean_name = uploaded_file.name.lower().replace(" ", "").split(".")[0]
+                        # 1. Get filename without extension
+                        filename_no_ext = os.path.splitext(uploaded_file.name)[0]
+                        filename_lower = filename_no_ext.lower()
                         
-                        # Strip prefix if provided
-                        candidate_name = clean_name
-                        if batch_prefix and batch_prefix.lower() in candidate_name:
-                            if candidate_name.startswith(batch_prefix.lower()):
-                                candidate_name = candidate_name[len(batch_prefix):]
+                        # 2. Handle Prefix
+                        mapping_key = filename_lower
+                        if batch_prefix:
+                            prefix = batch_prefix.lower()
+                            if mapping_key.startswith(prefix):
+                                mapping_key = mapping_key[len(prefix):]
                         
-                        if candidate_name in mapping_dict:
-                            matched_row_idx = mapping_dict[candidate_name]
+                        # 3. Clean Key (Standardize: strip spaces)
+                        mapping_key_clean = mapping_key.strip()
+                        
+                        # 4. Try matching
+                        matched_row_idx = None
+                        
+                        # Try exact match first
+                        if mapping_key_clean in mapping_dict:
+                            matched_row_idx = mapping_dict[mapping_key_clean]
+                        # Try broader match (e.g. if data has spaces but filename doesn't or vice versa)
+                        else:
+                             # Fallback: Check if any data key is contained in filename or vice versa
+                             # This is riskier but helpful
+                             pass
+
+                        if matched_row_idx is not None:
                             if matched_row_idx not in st.session_state.batch_attachments:
                                 st.session_state.batch_attachments[matched_row_idx] = []
                             st.session_state.batch_attachments[matched_row_idx].append((uploaded_file.name, uploaded_file.getvalue()))
                             matched_count += 1
+                        else:
+                            failed_files.append(uploaded_file.name)
                     
                     if matched_count > 0:
                         st.success(f"✅ Mapped {matched_count} files to {len(st.session_state.batch_attachments)} recipients!")
                     else:
-                        st.warning("⚠️ No files matched. Check your filename column and prefix settings.")
+                        st.error("⚠️ No files matched.")
+                        with st.expander("Troubleshoot Mapping"):
+                            st.write("First 3 Data Keys found in your Excel:", debug_keys[:3])
+                            st.write("First 3 Filenames tried:", failed_files[:3] if failed_files else "None")
+                            st.info("Tip: Ensure the 'Filename Column' in your Excel contains the exact text that appears in your filenames (excluding .pdf).")
         else:
             st.warning("Please upload data in the Data step first.")
 
