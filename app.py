@@ -1486,8 +1486,127 @@ def render_sidebar():
             st.rerun()
 
 
+def handle_signing_redirect():
+    """
+    Check for signing request in URL parameters.
+    If present, generate a fresh DocuSign link and redirect/show button.
+    """
+    # Streamlit 1.30+ uses st.query_params
+    # Fallback for older versions if needed, but assuming current
+    try:
+        query_params = st.query_params
+    except:
+        query_params = st.experimental_get_query_params()
+
+    if query_params.get("action") == "sign" and query_params.get("env_id") and query_params.get("email"):
+        # We are in Signing Mode!
+        st.set_page_config(page_title="Signing Portal", page_icon="✍️", layout="centered")
+        
+        # Simple CSS for the portal
+        st.markdown("""
+        <style>
+            .stApp { background-color: #f0f2f6; }
+            .sign-card {
+                background: white;
+                padding: 2rem;
+                border-radius: 10px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                text-align: center;
+                margin-top: 50px;
+            }
+            h1 { color: #333; font-size: 24px; }
+            p { color: #666; margin-bottom: 2rem; }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        env_id = query_params["env_id"]
+        email = query_params["email"]
+        name = query_params.get("name", "Signer")
+        
+        # Decode if they were URL encoded (streamlit does this auto usually, but good to be safe)
+        if isinstance(env_id, list): env_id = env_id[0]
+        if isinstance(email, list): email = email[0]
+        if isinstance(name, list): name = name[0]
+
+        with st.container():
+            st.markdown(f"""
+            <div class="sign-card">
+                <h1>📄 Document Ready for Signature</h1>
+                <p>Hello <b>{name}</b>, your secure document is ready.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Initialize DocuSign to get link
+            # We need the keys. In a real deployed app, these should be env vars or similar.
+            # Here we try to load them just like the main app.
+            
+            # Note: This requires the Private Key file to be present on the server where this runs.
+            key_file_path = "docusign_key.txt" # Relative to root in cloud deploy
+            if not os.path.exists(key_file_path):
+                 # Try absolute path logic from main app as fallback
+                 key_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docusign_key.txt")
+            
+            if os.path.exists(key_file_path):
+                try:
+                    # Init Handler (Hardcoded or Env Var credentials preferred for Portal mode)
+                    # For this demo, we fall back to the defaults used in main app if session state empty
+                    # Realistically, you'd load these from secrets.toml
+                    
+                    # Placeholder Creds (Should be replaced by user's actual config)
+                    ds_ik = "f588bd38-c3ac-428b-a6be-b9efbde23a5a"
+                    ds_uid = "c1370aa2-d90e-493e-a329-b2ef724105a5" 
+                    ds_aid = "516db58d-941b-4954-a0b1-19c9723f07fb"
+                    
+                    with st.spinner("🔐 Securely fetching your document..."):
+                        handler = DocuSignHandler(ds_ik, ds_uid, ds_aid, key_file_path)
+                        
+                        # We don't have the doc bytes here, but we have Envelope ID!
+                        # We need a method to get view from Envelope ID directly.
+                        # DocuSignHandler needs a slight update or we use the API directly here.
+                        # Let's use the handler's access token to call the View API.
+                        
+                        recipient_view_request = {
+                            "authenticationMethod": "email",
+                            "clientUserId": email,  # Must match what was set during creation
+                            "recipientId": "1",
+                            "returnUrl": "https://www.google.com", # Final destination
+                            "userName": name,
+                            "email": email
+                        }
+                        
+                        # Call API manually since handler.get_signing_link requires doc bytes (creation)
+                        api_client = handler.api_client
+                        envelopes_api = EnvelopesApi(api_client)
+                        results = envelopes_api.create_recipient_view(
+                            account_id=ds_aid,
+                            envelope_id=env_id,
+                            recipient_view_request=recipient_view_request
+                        )
+                        
+                        url = results.url
+                        
+                        # Show Button / Auto-Redirect
+                        st.link_button("✍️ Click Here to Sign Now", url, type="primary", use_container_width=True)
+                        st.expander("Trouble opening?").code(url)
+                        
+                        # Optional: Auto redirect (might be blocked by browsers)
+                        # st.markdown(f'<meta http-equiv="refresh" content="0;url={url}">', unsafe_allow_html=True)
+                        
+                except Exception as e:
+                    st.error(f"Unable to access document: {str(e)}")
+                    st.error("The link may have expired or the configuration is invalid.")
+            else:
+                st.error("System Configuration Error: Key file not found.")
+
+        return True # Handled
+    return False # Not signing mode
+
 def main():
     """Main application entry point."""
+    # Check for Signing Portal Mode first
+    if handle_signing_redirect():
+        return
+
     init_session_state()
     render_header()
     render_sidebar()
@@ -1760,6 +1879,14 @@ def render_docusign_logic():
             """
         )
     
+    # If using SMTP, we need to know the Public URL for the "Magic Link"
+    public_app_url = ""
+    if not use_docusign_email:
+        st.markdown("#### 🌐 Magic Link Configuration")
+        st.info("To make the link work forever (by generating a fresh link on-demand), we need to send users to *this app* instead of DocuSign directly.")
+        public_app_url = st.text_input("Public URL of this App", value="http://localhost:8501", help="e.g. https://my-print-app.vercel.app or http://localhost:8501")
+        if public_app_url.endswith("/"): public_app_url = public_app_url[:-1]
+
     if st.session_state.docusign_results:
         # Show Results
         results = st.session_state.docusign_results
@@ -1781,10 +1908,9 @@ def render_docusign_logic():
                 st.error("Missing Private Key file.")
                 return
 
-            # Check SMTP configuration (Only strictly needed if NOT using DocuSign email, or if we want to send notification)
-            # But kept for consistency/logging
+            # Check SMTP configuration
             if not use_docusign_email and (not st.session_state.get("email_configured") or not st.session_state.get("email_handler")):
-                st.error("⚠️ Please configure and connect SMTP Email first (in the 'Send via Email' tab) to send links yourself.")
+                st.error("⚠️ Please configure and connect SMTP Email first.")
                 return
 
             # Init DocuSign
@@ -1846,48 +1972,43 @@ def render_docusign_logic():
                         
                         # Find correct row index for batch matching
                         actual_row_idx = None
-                        # Efficient lookup if possible, but fallback to linear search for safety
                         for r_idx in range(len(data_df)):
-                             # Compare using string representation to match display logic
                              if (str(data_df.iloc[r_idx][recipient_email_col]).strip() == rec_email and 
                                  str(data_df.iloc[r_idx][recipient_name_col]).strip() == rec_name):
                                  actual_row_idx = r_idx
                                  break
                         
-                        # Fallback: if data is identical order
                         if actual_row_idx is None: actual_row_idx = i
 
                         if "batch_attachments" in st.session_state and actual_row_idx in st.session_state.batch_attachments:
                             batch_files = st.session_state.batch_attachments[actual_row_idx]
-                            # batch_files is list of (name, bytes)
                             current_batch_attachments.extend(batch_files)
                         
                         # Prepare Envelope Documents
-                        # Always include generated doc
                         envelope_docs = [(filename, file_data)]
                         
                         # If using DocuSign Email, we must include all attachments in the envelope itself
-                        if use_docusign_email:
-                            envelope_docs.extend(common_attachments_data)
-                            envelope_docs.extend(current_batch_attachments)
-                        else:
-                            # For Embedded, usually just the main doc is signed
-                            # But user might want others? Let's just sign the main code for simplicity 
-                            # and attach others to the SMTP email
-                            pass
+                        # If using 'Magic Link' (SMTP), we ALSO include them in envelope so they sign/view them there too?
+                        # Yes, standard practice is everything relevant to sign is in envelope.
+                        envelope_docs.extend(common_attachments_data)
+                        envelope_docs.extend(current_batch_attachments)
 
-                        # 1. Send Envelope / Get Link
-                        subject_formatted = ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name)
-                        body_formatted = ds_email_body.replace("{Filename}", filename).replace("{Name}", rec_name).replace("{Signing_Link}", "") # Link added later if needed checks
-
-                        signing_url, envelope_id = ds_handler.send_envelope(
+                        # 1. Send Envelope
+                        # Note: We generate link ONLY if not using Magic Link logic (which does it later)
+                        # But wait, send_envelope(embedded=True) returns a *short lived* link immediately.
+                        # For Magic Link, we just need the ENVELOPE ID.
+                        # Does send_envelope support returning just ID without link? 
+                        # Currently it generates link if embedded=True.
+                        # We can just ignore the returned link and use the ID.
+                        
+                        signing_url_temp, envelope_id = ds_handler.send_envelope(
                             rec_email, 
                             rec_name, 
                             envelope_docs,
-                            subject=subject_formatted,
-                            body=body_formatted,
-                            embedded=not use_docusign_email,
-                            cc_emails=cc_list # DocuSign handles CC
+                            subject=ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name),
+                            body=ds_email_body.replace("{Filename}", filename).replace("{Name}", rec_name).replace("{Signing_Link}", ""),
+                            embedded=not use_docusign_email, # True if we are handling email (SMTP)
+                            cc_emails=cc_list 
                         )
                         
                         if use_docusign_email:
@@ -1896,32 +2017,36 @@ def render_docusign_logic():
                             results["details"].append({"File": filename, "Status": "✅ Sent (DocuSign)", "Envelope ID": envelope_id})
                             
                         else:
-                            # Send via SMTP
-                            if not signing_url:
-                                raise Exception("Failed to generate signing link")
-                                
-                            # Prepare SMTP Attachments
+                            # SMTP Mode + Magic Link
+                            # Construct the Magic Link pointing to THIS app
+                            import urllib.parse
+                            params = {
+                                "action": "sign",
+                                "env_id": envelope_id,
+                                "email": rec_email,
+                                "name": rec_name
+                            }
+                            query_string = urllib.parse.urlencode(params)
+                            magic_link = f"{public_app_url}/?{query_string}"
+                            
+                            # Prepare SMTP Attachments (Review Copies)
                             smtp_attachments = []
-                            # We don't attach the Main Doc to SMTP usually if it's being signed, 
-                            # but user might want a "Review Copy". 
                             smtp_attachments.append((f"Review_{filename}", file_data))
                             smtp_attachments.extend(common_attachments_data)
                             smtp_attachments.extend(current_batch_attachments)
                             
                             # Format Link
-                            signing_link_html = f'<a href="{signing_url}" style="background:#0078d4;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Click here to sign</a>'
+                            signing_link_html = f'<a href="{magic_link}" style="background:#0078d4;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Click here to sign</a>'
                             final_body_smtp = ds_email_body.replace("{Name}", rec_name).replace("{Signing_Link}", signing_link_html)
                             
                             email_handler = st.session_state.email_handler
                             success, msg = email_handler.send_personalized_email(
                                 to_email=rec_email, 
-                                subject=subject_formatted, 
+                                subject=ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name), 
                                 body=final_body_smtp, 
-                                attachment_filename=None, # Passed in additional_attachments
+                                attachment_filename=None,
                                 attachment_data=None,
-                                cc_emails=cc_list, # Send CC via SMTP as well? Yes, but duplicates Docusign CC?
-                                # If DocuSign was embedded, DocuSign did NOT send email to CC either (usually).
-                                # So we handle CC here.
+                                cc_emails=cc_list, 
                                 bcc_emails=bcc_list,
                                 additional_attachments=smtp_attachments
                             )
@@ -1937,7 +2062,6 @@ def render_docusign_logic():
                         results["failed"] += 1
                         results["details"].append({"File": filename, "Status": "❌ Error", "Error": str(e)[:100]})
 
-                    # Rate limit cushion
                     if i < total_docs - 1:
                         import time
                         time.sleep(1.0 if use_docusign_email else 0.5)
