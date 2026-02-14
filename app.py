@@ -914,12 +914,9 @@ def render_email_section():
         render_nav_buttons(4, can_proceed=False, show_next=False)
         return
 
-
-    # Render unified email/DocuSign section
     render_smtp_email_section()
-
     
-    # Navigation buttons (common for both)
+    # Navigation buttons
     render_nav_buttons(4, can_proceed=False, show_next=False)
 
 
@@ -927,16 +924,6 @@ def render_smtp_email_section():
     """Render the SMTP Email sending interface."""
     handler = st.session_state.data_handler
     data_df = handler.df
-    generated_docs = st.session_state.generated_docs
-    
-    # Show only DocuSign section with all SMTP fields integrated
-    render_docusign_logic()
-    
-    return  # Exit early since we've handled everything
-
-
-def render_smtp_only_section():
-    """Render SMTP email section only (extracted from render_smtp_email_section)"""
     generated_docs = st.session_state.generated_docs
     
     # Initialize session state for email handler
@@ -1539,6 +1526,9 @@ def main():
         render_generate_section()
     elif current_tab == 4:
         render_email_section()
+    elif current_tab == 5:
+        render_docusign_logic()
+
 
 
 
@@ -1902,6 +1892,8 @@ def render_docusign_logic():
             st.rerun()
 
 
+
+
+
 if __name__ == "__main__":
     main()
-
