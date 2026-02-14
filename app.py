@@ -1735,13 +1735,30 @@ def render_docusign_logic():
     
     # Delivery Method Selection
     st.markdown("#### 📨 Delivery Method")
+    
     delivery_method = st.radio(
         "Choose how the signing request is sent:",
-        ["DocuSign Official Email (Recommended - Never Expires)", "My SMTP Email (Link expires in 5 minutes!)"],
-        help="DocuSign's email service provides secure, non-expiring links. Sending via your own email requires generating a temporary link that expires quickly for security."
+        [
+            "DocuSign Official Email (Secure, Never Expires, DocuSign Branded)", 
+            "My SMTP Email (Custom Branding, Link expires in 5 mins)"
+        ],
+        help="DocuSign's email service is robust but branded. sending via your own email allows custom branding but links expire quickly for security."
     )
     
     use_docusign_email = "DocuSign" in delivery_method
+    
+    # Contextual Info
+    if use_docusign_email:
+        st.info("✅ **Recommended:** DocuSign will send the email. The link will remain valid for 120 days. Recipients cannot easily forward the link.")
+    else:
+        st.warning(
+            """
+            ⚠️ **Important:** You are using your own email server. 
+            - **Pros:** Full control over design, no DocuSign logo.
+            - **Cons:** The signing link **expires in 5 minutes** unique to the time of generation.
+            - **Workaround:** If a user complains the link doesn't work, simply click 'Generate' again to send them a fresh link.
+            """
+        )
     
     if st.session_state.docusign_results:
         # Show Results
