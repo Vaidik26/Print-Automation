@@ -146,22 +146,33 @@ class DocumentProcessor:
                 for nested_table in cell.tables:
                     self._replace_in_table(nested_table, replacements)
 
-    def generate_document(self, data: Dict[str, str]) -> bytes:
+    def generate_document(
+        self, data: Dict[str, str], preserved_placeholders: List[str] = None
+    ) -> bytes:
         """
         Generate a new document with placeholders replaced by data values.
 
         Args:
             data: Dictionary mapping placeholder names to values
+            preserved_placeholders: List of placeholders to keep intact (e.g. {Signature})
 
         Returns:
             Generated document as bytes
         """
+        if preserved_placeholders is None:
+            # Default reserved placeholders for DocuSign
+            preserved_placeholders = ["Signature"]
+
         # Create a fresh copy of the template
         doc = Document(BytesIO(self.template_bytes))
 
         # Build replacement dictionary
         replacements = {}
         for placeholder in self.placeholders:
+            # Skip if explicitly preserved
+            if placeholder in preserved_placeholders:
+                continue
+
             if placeholder in data:
                 replacements[placeholder] = data[placeholder]
             else:

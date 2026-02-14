@@ -514,6 +514,14 @@ def render_column_mapping():
     st.markdown("### 🔗 Step 3: Map Columns to Placeholders")
 
     placeholders = st.session_state.template_processor.get_placeholders()
+    
+    # Filter out reserved placeholders that shouldn't be mapped (like {Signature} for DocuSign)
+    reserved_placeholders = ["Signature"]
+    if isinstance(placeholders, set):
+        placeholders = list(placeholders)
+    
+    placeholders = [p for p in placeholders if p not in reserved_placeholders]
+
     columns = st.session_state.data_handler.get_columns()
 
     # Auto-mapping logic
@@ -838,7 +846,8 @@ def render_generate_section():
                             filename = f"document_{idx + 1:04d}.docx"
 
                         # Generate document
-                        doc_bytes = processor.generate_document(row_data)
+                        # Explicitly preserve {Signature} so DocuSign can anchor to it
+                        doc_bytes = processor.generate_document(row_data, preserved_placeholders=["Signature"])
                         documents.append((filename, doc_bytes))
 
                         # Update progress
