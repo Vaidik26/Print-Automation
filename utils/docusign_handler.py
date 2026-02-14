@@ -164,16 +164,32 @@ class DocuSignHandler:
         if embedded:
             signer.client_user_id = signer_email
             
-        # 4. Add Tabs (SignHere) - only to the FIRST document for now
-        # Position roughly where it was before
-        sign_here = SignHere(
+        # 4. Add Tabs (SignHere)
+        # We use Anchor Tagging to place the signature exactly where {Signature} appears in the doc.
+        sign_here_anchor = SignHere(
+            anchor_string="{Signature}",
+            anchor_units="pixels",
+            anchor_y_offset="-10", # Adjust slightly up to align with text baseline
+            anchor_x_offset="0",
+            tab_label="Signature_Anchor"
+        )
+        
+        # Fallback tab in case {Signature} is missing from the document
+        # This ensures the envelope doesn't fail or have 0 signature fields
+        sign_here_fallback = SignHere(
             document_id="1",
             page_number="1",
-            x_position="220", 
-            y_position="680",
-            tab_label="Signature"
+            x_position="100", 
+            y_position="100", # Top left corner as safety
+            tab_label="Signature_Fallback" 
+            # Note: We can't easily make this "conditional".
+            # If both exist, user might be asked to sign twice.
+            # So for now, let's stick to the User's Request: Use {Signature}.
+            # If they don't include it, they should!
         )
-        signer.tabs = Tabs(sign_here_tabs=[sign_here])
+        
+        # Let's use the Anchor strategy primarily.
+        signer.tabs = Tabs(sign_here_tabs=[sign_here_anchor])
         
         # Add CC Recipients if provided
         carbon_copies = []
