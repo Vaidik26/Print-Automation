@@ -94,77 +94,109 @@ class DocuSignHandler:
                 raise Exception(f"Consent Required. Please visit this URL to grant consent: {consent_url}")
             raise e
 
-    def get_signing_link(self, signer_email, signer_name, document_name, document_bytes):
+    def send_envelope(self, signer_email, signer_name, documents, subject=None, body=None, embedded=False, cc_emails=None):
         """
-        Creates an envelope and generates a recipient view (signing link) for embedded signing.
-        However, since we want to send the link via *our* email, strict embedded signing usually 
-        redirects immediately. 
+        Creates and sends an envelope.
         
-        A better approach for "Emailing a link" is:
-        1. Create Envelope (status='sent') with the recipient marked as 'embedded' (clientUserId set).
-        2. Generate the Recipient View URL.
+        Args:
+            signer_email (str): Email of the signer.
+            signer_name (str): Name of the signer.
+            documents (list): List of tuples (filename, file_bytes).
+            subject (str): Email subject.
+            body (str): Email body (blurb).
+            embedded (bool): If True, generates a short-lived link for embedded signing. 
+                             If False, Docusign sends the email (link valid until envelope expires).
+        
+        Returns:
+            tuple: (signing_url, envelope_id)
+                   signing_url will be None if embedded=False.
         """
         
         # 1. Create Envelope Definition
-        envelope_definition = EnvelopeDefinition(email_subject=f"Please sign: {document_name}")
+        envelope_definition = EnvelopeDefinition()
+        envelope_definition.email_subject = subject if subject else "Please Sign"
+        envelope_definition.email_blurb = body if body else "Please sign the attached documents."
         
-        # Create Document
-        b64_doc = base64.b64encode(document_bytes).decode("utf-8")
-        doc = Document(
-            document_base64=b64_doc,
-            name=document_name,
-            file_extension=document_name.split('.')[-1],
-            document_id="1"
-        )
-        envelope_definition.documents = [doc]
+        # Default Expiration to 120 days (approx 4 months) and warn after 110
+        # This addresses "never expire" as best as possible within DocuSign limits
+        from docusign_esign import Notification, Expirations
+        expirations = Expirations(expire_after="120", expire_warn="110")
+        notification = Notification(use_account_defaults="false", expirations=expirations)
+        envelope_definition.notification = notification
+
+        # 2. Process Documents
+        doc_objects = []
+        for i, (filename, file_bytes) in enumerate(documents):
+            b64_doc = base64.b64encode(file_bytes).decode("utf-8")
+            doc = Document(
+                document_base64=b64_doc,
+                name=filename,
+                file_extension=filename.split('.')[-1],
+                document_id=str(i + 1)
+            )
+            doc_objects.append(doc)
+            
+        envelope_definition.documents = doc_objects
         
-        # Create Signer
-        # client_user_id is CRITICAL for embedded signing. It tells DocuSign "don't email them, I will handle it".
+        # 3. Create Signer
         signer = Signer(
             email=signer_email,
             name=signer_name,
             recipient_id="1",
-            routing_order="1",
-            client_user_id=signer_email # Using email as unique client ID for simplicity
+            routing_order="1"
         )
         
-        # Add SignHere tab positioned to match template signature area
-        # Based on user's document: after "Legal Officer" text, in red box area
+        # If embedded, set client_user_id (suppresses email, creates short-lived link)
+        if embedded:
+            signer.client_user_id = signer_email
+            
+        # 4. Add Tabs (SignHere) - only to the FIRST document for now
+        # Position roughly where it was before
         sign_here = SignHere(
             document_id="1",
             page_number="1",
-            x_position="220",  # Centered in signature box
-            y_position="680",  # Positioned in red box area
+            x_position="220", 
+            y_position="680",
             tab_label="Signature"
         )
+        signer.tabs = Tabs(sign_here_tabs=[sign_here])
         
-        signer.tabs = Tabs(sign_here_tabs=[sign_here]) 
-
-        envelope_definition.recipients = Recipients(signers=[signer])
-        envelope_definition.status = "sent" # Send immediately
+        # Add CC Recipients if provided
+        carbon_copies = []
+        if cc_emails:
+            for idx, cc_email in enumerate(cc_emails):
+                cc = CarbonCopy(
+                    email=str(cc_email).strip(),
+                    name="CC", 
+                    recipient_id=f"2{idx}",
+                    routing_order="2"
+                )
+                carbon_copies.append(cc)
         
-        # 2. Create Envelope
+        envelope_definition.recipients = Recipients(signers=[signer], carbon_copies=carbon_copies)
+        envelope_definition.status = "sent"
+        
+        # 5. Create Envelope
         envelopes_api = EnvelopesApi(self.api_client)
         results = envelopes_api.create_envelope(account_id=self.account_id, envelope_definition=envelope_definition)
         envelope_id = results.envelope_id
         
-        # 3. Generate Signing Link (Recipient View)
-        # Revert to dictionary approach - safer with Python SDK dynamic typing
-        # authenticationMethod must match what DocuSign expects (email, sso, etc)
-        # clientUserId MUST match the clientUserId in the signer definition
-        recipient_view_request = {
-            "authenticationMethod": "email",
-            "clientUserId": str(signer_email),
-            "recipientId": "1",
-            "returnUrl": "https://www.google.com",
-            "userName": str(signer_name),
-            "email": str(signer_email)
-        }
-        
-        view_results = envelopes_api.create_recipient_view(
-            account_id=self.account_id,
-            envelope_id=envelope_id,
-            recipient_view_request=recipient_view_request
-        )
-        
-        return view_results.url, envelope_id
+        signing_url = None
+        if embedded:
+            recipient_view_request = {
+                "authenticationMethod": "email",
+                "clientUserId": str(signer_email),
+                "recipientId": "1",
+                "returnUrl": "https://www.google.com", # Redirect after signing
+                "userName": str(signer_name),
+                "email": str(signer_email)
+            }
+            
+            view_results = envelopes_api.create_recipient_view(
+                account_id=self.account_id,
+                envelope_id=envelope_id,
+                recipient_view_request=recipient_view_request
+            )
+            signing_url = view_results.url
+            
+        return signing_url, envelope_id

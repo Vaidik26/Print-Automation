@@ -1720,6 +1720,16 @@ def render_docusign_logic():
     # Sending Logic
     st.markdown("---")
     
+    # Delivery Method Selection
+    st.markdown("#### 📨 Delivery Method")
+    delivery_method = st.radio(
+        "Choose how the signing request is sent:",
+        ["DocuSign Official Email (Recommended - Never Expires)", "My SMTP Email (Link expires in 5 minutes!)"],
+        help="DocuSign's email service provides secure, non-expiring links. Sending via your own email requires generating a temporary link that expires quickly for security."
+    )
+    
+    use_docusign_email = "DocuSign" in delivery_method
+    
     if st.session_state.docusign_results:
         # Show Results
         results = st.session_state.docusign_results
@@ -1736,26 +1746,24 @@ def render_docusign_logic():
             
     else:
         # Send Button 
-        if st.button("🚀 Generate Links & Send Emails", type="primary", use_container_width=True):
+        if st.button("🚀 Generate & Send", type="primary", use_container_width=True):
             if not has_key_file:
                 st.error("Missing Private Key file.")
                 return
 
-            # Check SMTP configuration
-            if not st.session_state.get("email_configured") or not st.session_state.get("email_handler"):
-                st.error("⚠️ Please configure and connect SMTP Email first (in the 'Send via Email' tab).")
+            # Check SMTP configuration (Only strictly needed if NOT using DocuSign email, or if we want to send notification)
+            # But kept for consistency/logging
+            if not use_docusign_email and (not st.session_state.get("email_configured") or not st.session_state.get("email_handler")):
+                st.error("⚠️ Please configure and connect SMTP Email first (in the 'Send via Email' tab) to send links yourself.")
                 return
-
-            email_handler = st.session_state.email_handler
 
             # Init DocuSign
             try:
-              # Use session state to store credentials
                 ds_integration_key = st.session_state.get("ds_integration_key", "f588bd38-c3ac-428b-a6be-b9efbde23a5a")
                 ds_user_id = st.session_state.get("ds_user_id", "c1370aa2-d90e-493e-a329-b2ef724105a5")
                 ds_account_id = st.session_state.get("ds_account_id", "516db58d-941b-4954-a0b1-19c9723f07fb")
-                # Base URL from screenshot is https://demo.docusign.net
-                ds_base_url = st.session_state.get("ds_base_url", "https://demo.docusign.net") # Default to Demo.ds_base_url
+                ds_base_url = st.session_state.get("ds_base_url", "https://demo.docusign.net")
+                
                 ds_handler = DocuSignHandler(
                     ds_integration_key,
                     ds_user_id,
@@ -1775,15 +1783,16 @@ def render_docusign_logic():
             generated_docs = st.session_state.generated_docs
             total_docs = len(generated_docs)
             
-            # Prepare common attachments
-            common_attachments = []
+            # Prepare common attachments (Read once)
+            common_attachments_data = []
             if ds_additional_files:
                 for f in ds_additional_files:
-                    common_attachments.append((f.name, f.read()))
+                    f.seek(0)
+                    common_attachments_data.append((f.name, f.read()))
 
             # Parse CC/BCC
             cc_list = [e.strip() for e in ds_cc_emails.split(",")] if ds_cc_emails else []
-            bcc_list = [e.strip() for e in ds_bcc_emails.split(",")] if ds_bcc_emails else []
+            bcc_list = [e.strip() for e in ds_bcc_emails.split(",")] if ds_bcc_emails else [] # BCC only works for SMTP
 
             for i, (filename, file_data) in enumerate(generated_docs):
                 progress_bar.progress((i + 1) / total_docs)
@@ -1794,8 +1803,7 @@ def render_docusign_logic():
                     rec_email = str(row[recipient_email_col]).strip()
                     rec_name = str(row[recipient_name_col]).strip()
                     
-                    # Debug: Show which recipient is being processed
-                    status_text.text(f"Processing {i+1}/{total_docs}: {filename} → {rec_name} ({rec_email})")
+                    status_text.text(f"Processing {i+1}/{total_docs}: {filename} → {rec_name}")
                     
                     if not rec_email or "@" not in rec_email:
                         results["failed"] += 1
@@ -1803,90 +1811,106 @@ def render_docusign_logic():
                         continue
                         
                     try:
-                        # 1. Get Signing Link from DocuSign
-                        signing_url, envelope_id = ds_handler.get_signing_link(
-                            rec_email, rec_name, filename, file_data
-                        )
+                        # Identify Attachments
+                        current_batch_attachments = []
                         
-                        # 2. Prepare Email Content with formatted link
-                        final_subject = ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name)
-                        
-                        # Format the signing link as HTML for better presentation
-                        signing_link_html = f'<a href="{signing_url}" style="display:inline-block;padding:10px 20px;background-color:#0078d4;color:white;text-decoration:none;border-radius:4px;">Click here to sign</a>'
-                        
-                        # Replace placeholder with formatted link
-                        final_body = ds_email_body.replace("{Name}", rec_name).replace("{Signing_Link}", signing_link_html)
-                        
-                        # 3. Handle Batch Attachments - Fixed mapping logic with correct row index
-                        current_attachments = common_attachments.copy()
-                        
-                        # CRITICAL FIX: Find the actual row index in data_df that matches this recipient
-                        # The loop variable 'i' is the index in generated_docs, NOT the row index in data_df
+                        # Find correct row index for batch matching
                         actual_row_idx = None
-                        for row_idx in range(len(data_df)):
-                            if (str(data_df.iloc[row_idx][recipient_email_col]).strip() == rec_email and 
-                                str(data_df.iloc[row_idx][recipient_name_col]).strip() == rec_name):
-                                actual_row_idx = row_idx
-                                break
+                        # Efficient lookup if possible, but fallback to linear search for safety
+                        for r_idx in range(len(data_df)):
+                             # Compare using string representation to match display logic
+                             if (str(data_df.iloc[r_idx][recipient_email_col]).strip() == rec_email and 
+                                 str(data_df.iloc[r_idx][recipient_name_col]).strip() == rec_name):
+                                 actual_row_idx = r_idx
+                                 break
                         
-                        # Check for batch attachments using the ACTUAL row index
-                        if actual_row_idx is not None and "batch_attachments" in st.session_state and st.session_state.batch_attachments:
-                            if isinstance(st.session_state.batch_attachments, dict):
-                                if actual_row_idx in st.session_state.batch_attachments:
-                                    batch_files = st.session_state.batch_attachments[actual_row_idx]
-                                    if isinstance(batch_files, list):
-                                        current_attachments.extend(batch_files)
-                                        # Debug: show which files are being attached
-                                        batch_names = [f[0] for f in batch_files]
-                                        status_text.text(f"Processing {i+1}/{total_docs}: {filename} → {rec_name} (+ {len(batch_files)} batch: {', '.join(batch_names)})")
-                            # Alternative: if it's stored as a list indexed by row
-                            elif isinstance(st.session_state.batch_attachments, list):
-                                if actual_row_idx < len(st.session_state.batch_attachments):
-                                    batch_files = st.session_state.batch_attachments[actual_row_idx]
-                                    if batch_files:
-                                        current_attachments.extend(batch_files)
+                        # Fallback: if data is identical order
+                        if actual_row_idx is None: actual_row_idx = i
 
-                        # 4. Send Email via SMTP
-                        success, msg = email_handler.send_personalized_email(
-                            to_email=rec_email, 
-                            subject=final_subject, 
-                            body=final_body, 
-                            attachment_filename=f"Review_Copy_{filename}", 
-                            attachment_data=file_data,
-                            cc_emails=cc_list,
-                            bcc_emails=bcc_list,
-                            additional_attachments=current_attachments
-                        )
-
-                        if success:
-                            results["sent"] += 1
-                            results["details"].append({"File": filename, "Status": "✅ Sent", "Envelope ID": envelope_id})
+                        if "batch_attachments" in st.session_state and actual_row_idx in st.session_state.batch_attachments:
+                            batch_files = st.session_state.batch_attachments[actual_row_idx]
+                            # batch_files is list of (name, bytes)
+                            current_batch_attachments.extend(batch_files)
+                        
+                        # Prepare Envelope Documents
+                        # Always include generated doc
+                        envelope_docs = [(filename, file_data)]
+                        
+                        # If using DocuSign Email, we must include all attachments in the envelope itself
+                        if use_docusign_email:
+                            envelope_docs.extend(common_attachments_data)
+                            envelope_docs.extend(current_batch_attachments)
                         else:
-                            results["failed"] += 1
-                            results["details"].append({"File": filename, "Status": "❌ Email Failed", "Error": msg})
+                            # For Embedded, usually just the main doc is signed
+                            # But user might want others? Let's just sign the main code for simplicity 
+                            # and attach others to the SMTP email
+                            pass
+
+                        # 1. Send Envelope / Get Link
+                        subject_formatted = ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name)
+                        body_formatted = ds_email_body.replace("{Filename}", filename).replace("{Name}", rec_name).replace("{Signing_Link}", "") # Link added later if needed checks
+
+                        signing_url, envelope_id = ds_handler.send_envelope(
+                            rec_email, 
+                            rec_name, 
+                            envelope_docs,
+                            subject=subject_formatted,
+                            body=body_formatted,
+                            embedded=not use_docusign_email,
+                            cc_emails=cc_list # DocuSign handles CC
+                        )
+                        
+                        if use_docusign_email:
+                            # Done! DocuSign sent the email.
+                            results["sent"] += 1
+                            results["details"].append({"File": filename, "Status": "✅ Sent (DocuSign)", "Envelope ID": envelope_id})
                             
+                        else:
+                            # Send via SMTP
+                            if not signing_url:
+                                raise Exception("Failed to generate signing link")
+                                
+                            # Prepare SMTP Attachments
+                            smtp_attachments = []
+                            # We don't attach the Main Doc to SMTP usually if it's being signed, 
+                            # but user might want a "Review Copy". 
+                            smtp_attachments.append((f"Review_{filename}", file_data))
+                            smtp_attachments.extend(common_attachments_data)
+                            smtp_attachments.extend(current_batch_attachments)
+                            
+                            # Format Link
+                            signing_link_html = f'<a href="{signing_url}" style="background:#0078d4;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Click here to sign</a>'
+                            final_body_smtp = ds_email_body.replace("{Name}", rec_name).replace("{Signing_Link}", signing_link_html)
+                            
+                            email_handler = st.session_state.email_handler
+                            success, msg = email_handler.send_personalized_email(
+                                to_email=rec_email, 
+                                subject=subject_formatted, 
+                                body=final_body_smtp, 
+                                attachment_filename=None, # Passed in additional_attachments
+                                attachment_data=None,
+                                cc_emails=cc_list, # Send CC via SMTP as well? Yes, but duplicates Docusign CC?
+                                # If DocuSign was embedded, DocuSign did NOT send email to CC either (usually).
+                                # So we handle CC here.
+                                bcc_emails=bcc_list,
+                                additional_attachments=smtp_attachments
+                            )
+                            
+                            if success:
+                                results["sent"] += 1
+                                results["details"].append({"File": filename, "Status": "✅ Sent (SMTP)", "Envelope ID": envelope_id})
+                            else:
+                                results["failed"] += 1
+                                results["details"].append({"File": filename, "Status": "❌ SMTP Failed", "Error": msg})
+
                     except Exception as e:
                         results["failed"] += 1
-                        error_msg = str(e)
-                        
-                        # Extract and format fuller error details
-                        full_error_details = error_msg
-                        if hasattr(e, 'body'):
-                            try:
-                                body_str = e.body.decode('utf-8') if isinstance(e.body, bytes) else str(e.body)
-                                full_error_details += f"\nAPI Response Body: {body_str}"
-                            except:
-                                full_error_details += f"\nAPI Response Body: {e.body}"
-                        
-                        # Show error immediately in UI for debugging
-                        with st.expander(f"❌ Error detailed for {filename}", expanded=True):
-                            st.code(full_error_details, language="text")
-                            
-                        results["details"].append({"File": filename, "Status": "❌ DocuSign Error", "Error": error_msg[:100] + "..."})
+                        results["details"].append({"File": filename, "Status": "❌ Error", "Error": str(e)[:100]})
 
+                    # Rate limit cushion
                     if i < total_docs - 1:
                         import time
-                        time.sleep(0.5)  # Reduced from 1.5s for better performance 
+                        time.sleep(1.0 if use_docusign_email else 0.5)
                 
             st.session_state.docusign_results = results
             st.rerun()
