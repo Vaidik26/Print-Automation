@@ -119,10 +119,12 @@ class DocuSignHandler:
         # This addresses "never expire" as best as possible within DocuSign limits
         from docusign_esign import Notification, Expirations
         expirations = Expirations(expire_after="120", expire_warn="110")
-        notification = Notification(use_account_defaults="false", expirations=expirations)
+        notification = Notification(expirations=expirations)
         envelope_definition.notification = notification
-
-        # 2. Process Documents
+        
+        # 1b. Set Envelope Blurb explicitly as well
+        envelope_definition.email_subject = subject
+        envelope_definition.email_blurb = body
         doc_objects = []
         for i, (filename, file_bytes) in enumerate(documents):
             b64_doc = base64.b64encode(file_bytes).decode("utf-8")
