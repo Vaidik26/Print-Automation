@@ -5,7 +5,7 @@ Handles basic DocuSign API interactions using JWT Authentication.
 import base64
 import os
 import requests
-from docusign_esign import ApiClient, EnvelopesApi, EnvelopeDefinition, Document, Signer, CarbonCopy, SignHere, Tabs, Recipients
+from docusign_esign import ApiClient, EnvelopesApi, EnvelopeDefinition, Document, Signer, CarbonCopy, SignHere, Tabs, Recipients, RecipientEmailNotification
 from docusign_esign.client.api_exception import ApiException
 
 class DocuSignHandler:
@@ -85,8 +85,6 @@ class DocuSignHandler:
 
             return True
 
-            return True
-
         except ApiException as e:
             # If consent is needed, return the consent URL
             if "consent_required" in str(e).lower():
@@ -145,6 +143,13 @@ class DocuSignHandler:
             recipient_id="1",
             routing_order="1"
         )
+        
+        # Explicitly set Email Notification for the signer to ensure content appears
+        if not embedded: # Only relevant for email delivery
+            signer.email_notification = RecipientEmailNotification(
+                email_subject=subject if subject else "Please Sign",
+                email_body=body if body else "Please review and sign."
+            )
         
         # If embedded, set client_user_id (suppresses email, creates short-lived link)
         if embedded:
