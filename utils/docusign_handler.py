@@ -126,10 +126,17 @@ class DocuSignHandler:
         doc_objects = []
         for i, (filename, file_bytes) in enumerate(documents):
             b64_doc = base64.b64encode(file_bytes).decode("utf-8")
+            
+            # Safe extension extraction
+            _, ext = os.path.splitext(filename)
+            file_extension = ext.lstrip('.').lower()
+            if not file_extension:
+                file_extension = "pdf" # Default fallback
+                
             doc = Document(
                 document_base64=b64_doc,
                 name=filename,
-                file_extension=filename.split('.')[-1],
+                file_extension=file_extension,
                 document_id=str(i + 1)
             )
             doc_objects.append(doc)
