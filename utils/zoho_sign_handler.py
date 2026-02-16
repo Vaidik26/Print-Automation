@@ -153,7 +153,7 @@ class ZohoSignHandler:
                          else:
                              return True, f"⚠️ Created but Submit failed: {sub_json.get('message')} (ID: {req_id})"
                     else:
-                        return True, f"⚠️ Created (Draft) but Submit HTTP Error {sub_response.status_code} (ID: {req_id})"
+                        return True, f"⚠️ Created (Draft) but Submit HTTP Error {sub_response.status_code}: {sub_response.text} (ID: {req_id})"
                     # --------------------------------------------------
                 else:
                     msg = res_json.get("message", "Unknown error")

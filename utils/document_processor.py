@@ -35,7 +35,7 @@ class DocumentProcessor:
     def _extract_placeholders_from_text(self, text: str) -> Set[str]:
         """Extract all placeholders from a text string."""
         matches = self.PLACEHOLDER_PATTERN.findall(text)
-        return set(matches)
+        return set(m.strip() for m in matches)
 
     def _extract_placeholders(self) -> Set[str]:
         """
@@ -117,9 +117,14 @@ class DocumentProcessor:
         # Replace all placeholders in the full text
         new_text = full_text
         for placeholder, value in replacements.items():
-            pattern = "{" + placeholder + "}"
-            new_text = new_text.replace(
-                pattern, str(value) if value is not None else ""
+            # Create pattern to match {Placeholder}, { Placeholder }, {PLACEHOLDER}, etc.
+            # We use the key from replacements which is already stripped
+            pattern = r"\{\s*" + re.escape(placeholder) + r"\s*\}"
+            new_text = re.sub(
+                pattern, 
+                str(value) if value is not None else "",
+                new_text,
+                flags=re.IGNORECASE 
             )
 
         # If text changed, we need to update the paragraph

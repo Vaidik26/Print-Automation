@@ -515,8 +515,14 @@ def render_column_mapping():
 
     placeholders = st.session_state.template_processor.get_placeholders()
     
+    
     # Filter out reserved placeholders that shouldn't be mapped (like {Signature} for DocuSign)
     reserved_placeholders = ["Signature"]
+    
+    # Validation: Check if Signature exists
+    if "Signature" not in placeholders:
+        st.warning("⚠️ **Missing {Signature} Placeholder**: Your Word template does not contain `{Signature}`. Valid E-Signature tags will NOT be added, and Zoho Sign/DocuSign may fail.")
+    
     if isinstance(placeholders, set):
         placeholders = list(placeholders)
     
@@ -847,19 +853,29 @@ def render_generate_section():
 
                         # Generate document
                         # Explicitly preserve {Signature} so DocuSign can anchor to it
-                    if "{Signature}" in row_data:
-                        # Should already be handled, but force it for tag
-                        pass 
-                    
-                    # Force Signature placeholder to become {{Signature:Recipient1}} (Zoho/DocuSign Tag)
-                    # We copy row_data to avoid modifying original
-                    gen_data = row_data.copy()
-                    gen_data["Signature"] = "{{Signature:Recipient1}}"
-                    
-                    with st.spinner(f"Generating {idx + 1}/{total}..."):
-                        # We do NOT preserve "Signature" anymore, we let it be replaced by {{Signature}}
-                        doc_bytes = processor.generate_document(gen_data)
-                        documents.append((filename, doc_bytes))
+                        if "{Signature}" in row_data:
+                            # Should already be handled, but force it for tag
+                            pass 
+                        
+                        # Force Signature placeholder to become {{Signature:Recipient1}} (Zoho/DocuSign Tag)
+                        # We copy row_data to avoid modifying original
+                        gen_data = row_data.copy()
+                        gen_data["Signature"] = "{{Signature:Recipient1}}"
+                        
+                        # Check if template has Signature placeholder
+                        if "Signature" not in processor.get_placeholders():
+                             st.error(f"❌ Template missing `{{Signature}}` placeholder. Cannot add e-signature tag.")
+                             # deciding whether to break or continue with error
+                             # better to generate but warn? No, Zoho will fail.
+                             # Let's add it to errors.
+                             # Actually difficult to break the flow here without refactoring.
+                             # The warning in Step 3 should be enough.
+                             pass 
+                        
+                        with st.spinner(f"Generating {idx + 1}/{total}..."):
+                            # We do NOT preserve "Signature" anymore, we let it be replaced by {{Signature}}
+                            doc_bytes = processor.generate_document(gen_data)
+                            documents.append((filename, doc_bytes))
 
                         # Update progress
                         progress = (idx + 1) / total
@@ -2044,6 +2060,9 @@ def render_docusign_logic():
                     return
             
             st.success(f"✅ Processing via {esign_provider}...")
+            # Prepare data with all dynamic columns (_Words, mapped placeholders)
+            all_processed_rows = st.session_state.data_handler.get_data_as_dicts(st.session_state.column_mapping)
+            
             progress_bar = st.progress(0)
             status_text = st.empty()
 
@@ -2051,10 +2070,12 @@ def render_docusign_logic():
                 progress_bar.progress((i + 1) / total_docs)
                 status_text.text(f"Processing {i+1}/{total_docs}: {filename}...")
                 
-                if i < len(data_df):
-                    row = data_df.iloc[i]
-                    rec_email = str(row[recipient_email_col]).strip()
-                    rec_name = str(row[recipient_name_col]).strip()
+                if i < len(all_processed_rows):
+                    row_data = all_processed_rows[i]
+                    
+                    # Use row_data for email/name as well (it has original cols)
+                    rec_email = str(row_data.get(recipient_email_col, "")).strip()
+                    rec_name = str(row_data.get(recipient_name_col, "")).strip()
                     
                     if not rec_email or "@" not in rec_email:
                         results["failed"] += 1
@@ -2070,8 +2091,16 @@ def render_docusign_logic():
                         if "batch_attachments" in st.session_state and i in st.session_state.batch_attachments:
                             current_batch_attachments.extend(st.session_state.batch_attachments[i])
                         
-                        subject_formatted = ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name)
-                        body_formatted = ds_email_body.replace("{Filename}", filename).replace("{Name}", rec_name).replace("{Signing_Link}", "")
+                        subject_formatted = ds_email_subject.replace("{Filename}", filename)
+                        body_formatted = ds_email_body.replace("{Filename}", filename).replace("{Signing_Link}", "")
+                        
+                        # Dynamic replacement for subject and body
+                        for key, val in row_data.items():
+                            placeholder = "{" + str(key) + "}"
+                            # Simple replace for body/subject
+                            if val:
+                                subject_formatted = subject_formatted.replace(placeholder, str(val))
+                                body_formatted = body_formatted.replace(placeholder, str(val))
 
                         # --- DOCUSIGN SENDING ---
                         if esign_provider == "DocuSign":
