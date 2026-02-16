@@ -78,78 +78,86 @@ class ZohoSignHandler:
 
     def send_document_for_signature(
         self,
-        file_name: str,
-        file_content: bytes,
+        files_list: list, # List of (filename, filebytes)
         recipient_email: str,
         recipient_name: str,
         request_name: str,
         notes: str = ""
     ) -> Tuple[bool, str]:
         """
-        Uploads a document and sends it for signature.
+        Uploads documents and sends them for signature.
+        Args:
+            files_list: List of tuples [(filename, bytes), ...]
+            ...
         """
         try:
             token = self.get_access_token()
             
-            # Zoho Sign typically requires Authtoken in header
             headers = {
                 "Authorization": f"Zoho-oauthtoken {token}"
             }
             
-            # Prepare Multipart Request
-            files = {
-                'file': (file_name, file_content)
-            }
+            # Prepare Multipart Request for multiple files
+            # requests requires a list of [('file', (name, bytes)), ...] to send multiple files with same key
+            multipart_files = []
+            for fname, fbytes in files_list:
+                multipart_files.append(('file', (fname, fbytes)))
             
-            # The 'requests' endpoint in v1 usually takes JSON payload in 'data' field
+            # Data Payload
             data_payload = {
                 "requests": {
                     "request_name": request_name,
-                    "request_type_name": "Others",
                     "is_sequential": False,
-                    "is_quick_send": True, 
-                    "notes": notes,
+                    "notes": notes, # This appears in the email body
                     "actions": [
                         {
                             "action_type": "SIGN",
                             "recipient_email": recipient_email,
                             "recipient_name": recipient_name,
                             "verify_recipient": False,
-                            "is_embedded": False,
-                            "in_person_name": "",
-                            "in_person_email": "",
-                            "role": "Signer",
+                            "is_embedded": False, # Remote signing (email)
                             "signing_order": 0
                         }
                     ]
                 }
             }
             
+            # Check for Organization ID header if needed?
+            # Usually for Zoho APIs, orgId is passed in header 'ZP-TO-DC' or simply derived from token, 
+            # but sometimes good to be explicit if user has multiple orgs.
+            # However, for simplicity let's stick to basics unless it fails.
+            
             data = {
                 'data': json.dumps(data_payload)
             }
             
-            # Construct URL
             url = f"{self.API_BASE_URL}/requests"
             
-            response = requests.post(url, headers=headers, files=files, data=data)
+            response = requests.post(url, headers=headers, files=multipart_files, data=data)
             
             if response.status_code in [200, 201]:
                 res_json = response.json()
                 if res_json.get("status") == "success":
                     req_info = res_json.get("requests", {})
                     req_id = req_info.get("request_id")
-                    req_status = req_info.get("request_status", "unknown")
                     
-                    # Check if it actually went through or stayed in draft
-                    if req_status in ["inprogress", "submitted"]:
-                        return True, f"Sent successfully (ID: {req_id}, Status: {req_status})"
+                    # --- Step 2: Submit the Request (Trigger Email) ---
+                    submit_url = f"{self.API_BASE_URL}/requests/{req_id}/submit"
+                    # Submit requires no body, just the id in URL
+                    sub_response = requests.post(submit_url, headers=headers)
+                    
+                    if sub_response.status_code == 200:
+                         sub_json = sub_response.json()
+                         if sub_json.get("status") == "success":
+                             return True, f"✅ Sent successfully (ID: {req_id})"
+                         else:
+                             return True, f"⚠️ Created but Submit failed: {sub_json.get('message')} (ID: {req_id})"
                     else:
-                        # accepted but maybe draft?
-                        return True, f"Created but status is '{req_status}' (ID: {req_id}). Check Zoho 'Drafts' or 'In Progress'."
+                        return True, f"⚠️ Created (Draft) but Submit HTTP Error {sub_response.status_code} (ID: {req_id})"
+                    # --------------------------------------------------
                 else:
                     msg = res_json.get("message", "Unknown error")
-                    return False, f"API Error: {msg}"
+                    return False, f"Zoho API Error: {msg}"
             else:
                 return False, f"HTTP Error {response.status_code}: {response.text}"
 

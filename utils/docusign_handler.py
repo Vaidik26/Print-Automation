@@ -165,9 +165,9 @@ class DocuSignHandler:
             signer.client_user_id = signer_email
             
         # 4. Add Tabs (SignHere)
-        # We use Anchor Tagging to place the signature exactly where {Signature} appears in the doc.
+        # We use Anchor Tagging to place the signature exactly where {{Signature:Recipient1}} appears in the doc.
         sign_here_anchor = SignHere(
-            anchor_string="{Signature}",
+            anchor_string="{{Signature:Recipient1}}",
             anchor_units="pixels",
             anchor_y_offset="-10", # Adjust slightly up to align with text baseline
             anchor_x_offset="0",

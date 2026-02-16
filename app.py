@@ -847,7 +847,18 @@ def render_generate_section():
 
                         # Generate document
                         # Explicitly preserve {Signature} so DocuSign can anchor to it
-                        doc_bytes = processor.generate_document(row_data, preserved_placeholders=["Signature"])
+                    if "{Signature}" in row_data:
+                        # Should already be handled, but force it for tag
+                        pass 
+                    
+                    # Force Signature placeholder to become {{Signature:Recipient1}} (Zoho/DocuSign Tag)
+                    # We copy row_data to avoid modifying original
+                    gen_data = row_data.copy()
+                    gen_data["Signature"] = "{{Signature:Recipient1}}"
+                    
+                    with st.spinner(f"Generating {idx + 1}/{total}..."):
+                        # We do NOT preserve "Signature" anymore, we let it be replaced by {{Signature}}
+                        doc_bytes = processor.generate_document(gen_data)
                         documents.append((filename, doc_bytes))
 
                         # Update progress
@@ -926,9 +937,9 @@ def render_email_section():
     # Toggle between Email and DocuSign
     send_mode = st.radio(
         "Select Action:", 
-        ["📧 Send via Email (SMTP)", "✍️ Send for Signature (DocuSign)"], 
+        ["📧 Send via Email (SMTP)", "✍️ Send for E-Signature (DocuSign / Zoho)"], 
         horizontal=True,
-        help="Choose 'Email' to send documents as attachments. Choose 'DocuSign' to request e-signatures."
+        help="Choose 'Email' to send documents as attachments. Choose 'E-Signature' to request signatures via DocuSign or Zoho Sign."
     )
 
     if send_mode == "📧 Send via Email (SMTP)":
@@ -1674,97 +1685,158 @@ def main():
 
 
 from utils.docusign_handler import DocuSignHandler
+from utils.zoho_sign_handler import ZohoSignHandler
 import os
+import urllib.parse
+import time
 
 def render_docusign_logic():
-    """Render the DocuSign specific logic."""
-    st.markdown("### ✍️ DocuSign Integration")
+    """Render the E-Signature specific logic (DocuSign or Zoho Sign)."""
+    st.markdown("### ✍️ E-Signature Integration")
+    
+    # 1. Select Provider
+    esign_provider = st.radio("Select E-Signature Provider", ["DocuSign", "Zoho Sign"], horizontal=True)
     
     if "docusign_results" not in st.session_state:
         st.session_state.docusign_results = None
 
-    # Credentials Section
-    # Use absolute path relative to app.py
-    key_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docusign_key.txt")
-    has_key_file = os.path.exists(key_file_path)
-    
-    # Auto-parse credentials if file exists and not yet set
-    default_ik = ""
-    default_uid = ""
-    default_aid = ""
-    default_base = "https://demo.docusign.net"
+    # --- DOCUSIGN CREDENTIALS ---
+    if esign_provider == "DocuSign":
+        # Credentials Section
+        # Use absolute path relative to app.py
+        key_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docusign_key.txt")
+        has_key_file = os.path.exists(key_file_path)
+        
+        # Auto-parse credentials if file exists and not yet set
+        default_ik = ""
+        default_uid = ""
+        default_aid = ""
+        default_base = "https://demo.docusign.net"
 
-    if has_key_file:
-        try:
-            with open(key_file_path, "r") as f:
-                content = f.read()
-                for line in content.splitlines():
-                    if "Integration Key =" in line: default_ik = line.split("=")[1].strip()
-                    if "User ID =" in line: default_uid = line.split("=")[1].strip()
-                    if "API Account ID =" in line: default_aid = line.split("=")[1].strip()
-                    # if "Account Base URI =" in line: default_base = line.split("=")[1].strip() 
-                    # Note: We intentionally IGNORE the file's base URI because it often defaults to Prod (na4)
-                    # even for Developer keys. We stick to demo unless user changes it.
-        except:
-            pass
-            
-    with st.expander("🔑 DocuSign Credentials", expanded=True):
         if has_key_file:
-            st.success("✅ 'docusign_key.txt' found and parsed.")
-        else:
-            st.error("❌ 'docusign_key.txt' missing. Please create it with your Private Key.")
-            
-        col1, col2 = st.columns(2)
-        with col1:
-            st.session_state.ds_integration_key = st.text_input("Integration Key", value=st.session_state.get("ds_integration_key", default_ik))
-            st.session_state.ds_user_id = st.text_input("User ID", value=st.session_state.get("ds_user_id", default_uid))
-        with col2:
-            st.session_state.ds_account_id = st.text_input("API Account ID", value=st.session_state.get("ds_account_id", default_aid))
-            
-            # Smart default: If session has nothing, use demo. 
-            current_base = st.session_state.get("ds_base_url", default_base)
-            st.session_state.ds_base_url = st.text_input("Base URL", value=current_base, help="Use 'https://demo.docusign.net' for Developer Sandbox accounts.")
-            
-            if "na" in st.session_state.ds_base_url and "demo" not in st.session_state.ds_base_url:
-                st.warning("⚠️ You are using a Production URL. New integrations usually require 'https://demo.docusign.net'.")
-
-    # SMTP Configuration Section
-    st.markdown("---")
-    with st.expander("📧 SMTP Email Configuration", expanded=True):
-        st.info("DocuSign will generate signing links and send them via your email server.")
-        col1, col2 = st.columns(2)
-        with col1:
-            smtp_server = st.text_input("SMTP Server", value=st.session_state.get("smtp_server", "smtp.gmail.com"))
-            smtp_port = st.number_input("SMTP Port", value=st.session_state.get("smtp_port", 587), min_value=1, max_value=65535)
-            sender_email = st.text_input("Sender Email", value=st.session_state.get("sender_email", ""))
-        with col2:
-            sender_name = st.text_input("Sender Name", value=st.session_state.get("sender_name", ""))
-            sender_password = st.text_input("App Password", type="password", help="Use App Password for Gmail", value=st.session_state.get("sender_password", ""))
-        
-        # Store values in session state
-        st.session_state.smtp_server = smtp_server
-        st.session_state.smtp_port = smtp_port
-        st.session_state.sender_email = sender_email
-        st.session_state.sender_name = sender_name
-        st.session_state.sender_password = sender_password
-        
-        # Test connection button
-        if st.button("🔌 Connect & Verify SMTP", key="test_smtp_ds"):
-            if not (sender_email and sender_password):
-                st.error("❌ Please provide email and password")
+            try:
+                with open(key_file_path, "r") as f:
+                    content = f.read()
+                    for line in content.splitlines():
+                        if "Integration Key =" in line: default_ik = line.split("=")[1].strip()
+                        if "User ID =" in line: default_uid = line.split("=")[1].strip()
+                        if "API Account ID =" in line: default_aid = line.split("=")[1].strip()
+            except:
+                pass
+                
+        with st.expander("🔑 DocuSign Credentials", expanded=True):
+            if has_key_file:
+                st.success("✅ 'docusign_key.txt' found and parsed.")
             else:
+                st.error("❌ 'docusign_key.txt' missing. Please create it with your Private Key.")
+                
+            col1, col2 = st.columns(2)
+            with col1:
+                st.session_state.ds_integration_key = st.text_input("Integration Key", value=st.session_state.get("ds_integration_key", default_ik))
+                st.session_state.ds_user_id = st.text_input("User ID", value=st.session_state.get("ds_user_id", default_uid))
+            with col2:
+                st.session_state.ds_account_id = st.text_input("API Account ID", value=st.session_state.get("ds_account_id", default_aid))
+                
+                # Smart default: If session has nothing, use demo. 
+                current_base = st.session_state.get("ds_base_url", default_base)
+                st.session_state.ds_base_url = st.text_input("Base URL", value=current_base, help="Use 'https://demo.docusign.net' for Developer Sandbox accounts.")
+                
+                if "na" in st.session_state.ds_base_url and "demo" not in st.session_state.ds_base_url:
+                    st.warning("⚠️ You are using a Production URL. New integrations usually require 'https://demo.docusign.net'.")
+
+        # Delivery Method for DocuSign
+        st.markdown("#### 📨 Delivery Method")
+        delivery_method = st.radio(
+            "Choose how the signing request is sent:",
+            [
+                "DocuSign Official Email (Secure, Never Expires, DocuSign Branded)", 
+                "My SMTP Email (Custom Branding, Link expires in 5 mins)"
+            ],
+            help="DocuSign's email service is robust but branded. sending via your own email allows custom branding but links expire quickly for security."
+        )
+        use_docusign_email = "DocuSign" in delivery_method
+        use_zoho_sign = False # Not using Zoho
+        
+        # Contextual Info
+        if use_docusign_email:
+            st.info("✅ **Recommended:** DocuSign will send the email. The link will remain valid for 120 days.")
+        else:
+            st.warning("⚠️ **Important:** Using SMTP (Magic Link). Links expire in 5 mins.")
+            
+        # Magic Link UI
+        public_app_url = ""
+        if not use_docusign_email:
+            st.markdown("#### 🌐 Magic Link Configuration")
+            public_app_url = st.text_input("Public URL of this App", value="http://localhost:8501")
+            
+    # --- ZOHO SIGN CREDENTIALS ---
+    elif esign_provider == "Zoho Sign":
+        # Load defaults from .env if available
+        # But we won't require python-dotenv, just check os.environ or manual parse
+        env_cid = ""
+        env_csec = ""
+        env_ref = ""
+        env_oid = ""
+        
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        if os.path.exists(env_path):
+            try:
+                with open(env_path, "r") as f:
+                    for line in f:
+                        if line.startswith("CLIENT_ID="): env_cid = line.split("=", 1)[1].strip()
+                        if line.startswith("CLIENT_SECRET="): env_csec = line.split("=", 1)[1].strip()
+                        if line.startswith("REFRESH_TOKEN="): env_ref = line.split("=", 1)[1].strip()
+                        if line.startswith("ORGANIZATION_ID="): env_oid = line.split("=", 1)[1].strip()
+            except: pass
+
+        with st.expander("🔑 Zoho Sign Credentials", expanded=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.session_state.zoho_client_id = st.text_input("Client ID", value=st.session_state.get("zoho_client_id", env_cid), type="password")
+                st.session_state.zoho_client_secret = st.text_input("Client Secret", value=st.session_state.get("zoho_client_secret", env_csec), type="password")
+            with col2:
+                st.session_state.zoho_refresh_token = st.text_input("Refresh Token", value=st.session_state.get("zoho_refresh_token", env_ref), type="password")
+                st.session_state.zoho_org_id = st.text_input("Organization ID", value=st.session_state.get("zoho_org_id", env_oid))
+            
+            st.info("ℹ️ Zoho Sign utilizes 'Pay-As-You-Go' API credits or your Subscription credits.")
+
+        # For Zoho, simple "Zoho Sends Email" is the default API behavior
+        use_docusign_email = False # Not using DocuSign
+        use_zoho_sign = True
+
+    # SMTP Configuration Section (Only needed if NOT using DocuSign Email AND NOT using Zoho Sign - actually needed for SMTP option for DS)
+    if esign_provider == "DocuSign" and not use_docusign_email:
+        st.markdown("---")
+        with st.expander("📧 SMTP Email Configuration", expanded=True):
+            st.info("DocuSign will generate signing links and send them via your email server.")
+            col1, col2 = st.columns(2)
+            with col1:
+                smtp_server = st.text_input("SMTP Server", value=st.session_state.get("smtp_server", "smtp.gmail.com"))
+                smtp_port = st.number_input("SMTP Port", value=st.session_state.get("smtp_port", 587))
+                sender_email = st.text_input("Sender Email", value=st.session_state.get("sender_email", ""))
+            with col2:
+                sender_name = st.text_input("Sender Name", value=st.session_state.get("sender_name", ""))
+                sender_password = st.text_input("App Password", type="password", value=st.session_state.get("sender_password", ""))
+            
+            st.session_state.smtp_server = smtp_server
+            st.session_state.smtp_port = smtp_port
+            st.session_state.sender_email = sender_email
+            st.session_state.sender_name = sender_name
+            st.session_state.sender_password = sender_password
+            
+            # Simple check
+            if st.button("Test SMTP Connection"):
+                from utils.email_handler import EmailHandler
                 try:
-                    from utils.email_handler import EmailHandler
-                    handler_obj = EmailHandler(smtp_server, smtp_port, sender_email, sender_password, sender_name)
-                    success, msg = handler_obj.test_connection()
-                    if success:
-                        st.success(f"✅ {msg}")
-                        st.session_state.email_handler = handler_obj
+                    handler = EmailHandler(smtp_server, smtp_port, sender_email, sender_password, sender_name)
+                    if handler.verify_connection():
+                        st.success("✅ SMTP Connected!")
+                        st.session_state.email_handler = handler
                         st.session_state.email_configured = True
                     else:
-                        st.error(f"❌ {msg}")
+                        st.error("❌ Connection failed.")
                 except Exception as e:
-                    st.error(f"❌ Connection failed: {str(e)}")
+                    st.error(f"Error: {e}")
 
     # Batch File Mapping Section (moved below email body, expanded by default)
     st.markdown("---")
@@ -1857,7 +1929,12 @@ def render_docusign_logic():
 
     # Mapping Section
     st.markdown("### 🔗 Recipient Mapping & Email Config")
-    st.markdown("_This uses your Email Configuration (SMTP) to send the signing link._")
+    if esign_provider == "DocuSign" and not use_docusign_email:
+        st.markdown("_This uses your Email Configuration (SMTP) to send the signing link._")
+    elif esign_provider == "DocuSign" and use_docusign_email:
+        st.markdown("_DocuSign will send the signing request directly._")
+    elif esign_provider == "Zoho Sign":
+        st.markdown("_Zoho Sign will send the signing request directly._")
     
     if "data_handler" not in st.session_state or st.session_state.data_handler is None:
          st.warning("Please upload data first.")
@@ -1881,8 +1958,8 @@ def render_docusign_logic():
     
     # Email Subject/Body
     ds_email_subject = st.text_input("Email Subject", value="Action Required: Please Sign Document {Filename}", help="Placeholders: {Filename}, {Name}")
-    ds_email_body = st.text_area("Email Body", value="Dear {Name},\n\nPlease review and sign the attached document by clicking the link below:\n\n{Signing_Link}\n\nBest regards,", height=150)
-    st.caption("ℹ️ The `{Signing_Link}` placeholder will be replaced by the unique DocuSign link.")
+    ds_email_body = st.text_area("Email Body", value="Dear {Name},\n\nPlease review and sign the attached document by clicking the link below:\n\n{Signing_Link}\n\nBest regards:", height=150)
+    st.caption("ℹ️ The `{Signing_Link}` placeholder will be replaced by the unique E-Signature link.")
     
     # Common attachments
     st.markdown("**📂 Common Attachments**")
@@ -1891,41 +1968,7 @@ def render_docusign_logic():
     # Sending Logic
     st.markdown("---")
     
-    # Delivery Method Selection
-    st.markdown("#### 📨 Delivery Method")
-    
-    delivery_method = st.radio(
-        "Choose how the signing request is sent:",
-        [
-            "DocuSign Official Email (Secure, Never Expires, DocuSign Branded)", 
-            "My SMTP Email (Custom Branding, Link expires in 5 mins)"
-        ],
-        help="DocuSign's email service is robust but branded. sending via your own email allows custom branding but links expire quickly for security."
-    )
-    
-    use_docusign_email = "DocuSign" in delivery_method
-    
-    # Contextual Info
-    if use_docusign_email:
-        st.info("✅ **Recommended:** DocuSign will send the email. The link will remain valid for 120 days. Recipients cannot easily forward the link.")
-    else:
-        st.warning(
-            """
-            ⚠️ **Important:** You are using your own email server. 
-            - **Pros:** Full control over design, no DocuSign logo.
-            - **Cons:** The signing link **expires in 5 minutes** unique to the time of generation.
-            - **Workaround:** If a user complains the link doesn't work, simply click 'Generate' again to send them a fresh link.
-            """
-        )
-    
-    # If using SMTP, we need to know the Public URL for the "Magic Link"
-    public_app_url = ""
-    if not use_docusign_email:
-        st.markdown("#### 🌐 Magic Link Configuration")
-        st.info("To make the link work forever (by generating a fresh link on-demand), we need to send users to *this app* instead of DocuSign directly.")
-        public_app_url = st.text_input("Public URL of this App", value="http://localhost:8501", help="e.g. https://my-print-app.vercel.app or http://localhost:8501")
-        if public_app_url.endswith("/"): public_app_url = public_app_url[:-1]
-
+    # Results & Sending
     if st.session_state.docusign_results:
         # Show Results
         results = st.session_state.docusign_results
@@ -1943,36 +1986,6 @@ def render_docusign_logic():
     else:
         # Send Button 
         if st.button("🚀 Generate & Send", type="primary", use_container_width=True):
-            if not has_key_file:
-                st.error("Missing Private Key file.")
-                return
-
-            # Check SMTP configuration
-            if not use_docusign_email and (not st.session_state.get("email_configured") or not st.session_state.get("email_handler")):
-                st.error("⚠️ Please configure and connect SMTP Email first.")
-                return
-
-            # Init DocuSign
-            try:
-                ds_integration_key = st.session_state.get("ds_integration_key", "f588bd38-c3ac-428b-a6be-b9efbde23a5a")
-                ds_user_id = st.session_state.get("ds_user_id", "c1370aa2-d90e-493e-a329-b2ef724105a5")
-                ds_account_id = st.session_state.get("ds_account_id", "516db58d-941b-4954-a0b1-19c9723f07fb")
-                ds_base_url = st.session_state.get("ds_base_url", "https://demo.docusign.net")
-                
-                ds_handler = DocuSignHandler(
-                    ds_integration_key,
-                    ds_user_id,
-                    ds_account_id,
-                    key_file_path, 
-                    ds_base_url
-                )
-            except Exception as e:
-                st.error(f"DocuSign Init Error: {str(e)}")
-                return
-            
-            st.success("✅ Connected to DocuSign! Processing...")
-            progress_bar = st.progress(0)
-            status_text = st.empty()
             
             results = {"sent": 0, "failed": 0, "details": []}
             generated_docs = st.session_state.generated_docs
@@ -1987,7 +2000,52 @@ def render_docusign_logic():
 
             # Parse CC/BCC
             cc_list = [e.strip() for e in ds_cc_emails.split(",")] if ds_cc_emails else []
-            bcc_list = [e.strip() for e in ds_bcc_emails.split(",")] if ds_bcc_emails else [] # BCC only works for SMTP
+            bcc_list = [] # Only for SMTP really
+            
+            # --- INITIALIZE HANDLERS ---
+            ds_handler = None
+            zoho_handler = None
+            
+            if esign_provider == "DocuSign":
+                if not has_key_file:
+                    st.error("Missing DocuSign Private Key file.")
+                    return
+                # Check SMTP if needed
+                if not use_docusign_email and (not st.session_state.get("email_configured") or not st.session_state.get("email_handler")):
+                    st.error("⚠️ Please configure SMTP Email first.")
+                    return
+                # Init DocuSign
+                try:
+                    ds_handler = DocuSignHandler(
+                        st.session_state.ds_integration_key,
+                        st.session_state.ds_user_id,
+                        st.session_state.ds_account_id,
+                        key_file_path, 
+                        st.session_state.ds_base_url
+                    )
+                except Exception as e:
+                    st.error(f"DocuSign Init Error: {str(e)}")
+                    return
+            elif esign_provider == "Zoho Sign":
+                # Init Zoho
+                try:
+                    zoho_handler = ZohoSignHandler(
+                        st.session_state.zoho_client_id,
+                        st.session_state.zoho_client_secret,
+                        st.session_state.zoho_refresh_token,
+                        st.session_state.zoho_org_id if st.session_state.zoho_org_id else None
+                    )
+                    # Validate
+                    # valid, msg = zoho_handler.validate_connection()
+                    # if not valid:
+                    #     st.error(msg); return
+                except Exception as e:
+                    st.error(f"Zoho Init Error: {str(e)}")
+                    return
+            
+            st.success(f"✅ Processing via {esign_provider}...")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
 
             for i, (filename, file_data) in enumerate(generated_docs):
                 progress_bar.progress((i + 1) / total_docs)
@@ -1998,8 +2056,6 @@ def render_docusign_logic():
                     rec_email = str(row[recipient_email_col]).strip()
                     rec_name = str(row[recipient_name_col]).strip()
                     
-                    status_text.text(f"Processing {i+1}/{total_docs}: {filename} → {rec_name}")
-                    
                     if not rec_email or "@" not in rec_email:
                         results["failed"] += 1
                         results["details"].append({"File": filename, "Status": "❌ Skipped", "Error": "Invalid Email"})
@@ -2009,105 +2065,84 @@ def render_docusign_logic():
                         # Identify Attachments
                         current_batch_attachments = []
                         
-                        # Find correct row index for batch matching
-                        actual_row_idx = None
-                        for r_idx in range(len(data_df)):
-                             if (str(data_df.iloc[r_idx][recipient_email_col]).strip() == rec_email and 
-                                 str(data_df.iloc[r_idx][recipient_name_col]).strip() == rec_name):
-                                 actual_row_idx = r_idx
-                                 break
+                        # Find correct row index for batch matching by MATCHING LOGIC (Using integer index i if mapped by index)
+                        actual_row_idx = i 
+                        if "batch_attachments" in st.session_state and i in st.session_state.batch_attachments:
+                            current_batch_attachments.extend(st.session_state.batch_attachments[i])
                         
-                        if actual_row_idx is None: actual_row_idx = i
+                        subject_formatted = ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name)
+                        body_formatted = ds_email_body.replace("{Filename}", filename).replace("{Name}", rec_name).replace("{Signing_Link}", "")
 
-                        if "batch_attachments" in st.session_state and actual_row_idx in st.session_state.batch_attachments:
-                            batch_files = st.session_state.batch_attachments[actual_row_idx]
-                            current_batch_attachments.extend(batch_files)
-                        
-                        # Prepare Envelope Documents
-                        envelope_docs = [(filename, file_data)]
-                        
-                        # If using DocuSign Email, we must include all attachments in the envelope itself
-                        # If using 'Magic Link' (SMTP), we ALSO include them in envelope so they sign/view them there too?
-                        # Yes, standard practice is everything relevant to sign is in envelope.
-                        envelope_docs.extend(common_attachments_data)
-                        envelope_docs.extend(current_batch_attachments)
+                        # --- DOCUSIGN SENDING ---
+                        if esign_provider == "DocuSign":
+                             envelope_docs = [(filename, file_data)]
+                             # if using official email, include all attachments
+                             if use_docusign_email:
+                                 envelope_docs.extend(common_attachments_data)
+                                 envelope_docs.extend(current_batch_attachments)
+                             
+                             # Send
+                             signing_url, envelope_id = ds_handler.send_envelope(
+                                rec_email, rec_name, envelope_docs,
+                                subject=subject_formatted,
+                                body=body_formatted,
+                                embedded=not use_docusign_email,
+                                cc_emails=cc_list 
+                             )
+                             
+                             if use_docusign_email:
+                                 results["sent"] += 1
+                                 results["details"].append({"File": filename, "Status": "✅ Sent (DocuSign)", "Envelope ID": envelope_id})
+                             else:
+                                 # SMTP Magic Link Logic (Existing)
+                                 params = {"action": "sign", "env_id": envelope_id, "email": rec_email, "name": rec_name}
+                                 magic_link = f"{public_app_url}/?{urllib.parse.urlencode(params)}"
+                                 
+                                 smtp_attachments = [(f"Review_{filename}", file_data)] + common_attachments_data + current_batch_attachments
+                                 link_html = f'<a href="{magic_link}">Click here to sign</a>'
+                                 
+                                 email_handler = st.session_state.email_handler
+                                 success, msg = email_handler.send_personalized_email(
+                                     to_email=rec_email, subject=subject_formatted, 
+                                     body=ds_email_body.replace("{Name}", rec_name).replace("{Signing_Link}", link_html),
+                                     cc_emails=cc_list, additional_attachments=smtp_attachments,
+                                     attachment_filename=None, attachment_data=None
+                                 )
+                                 if success: results["sent"] += 1; results["details"].append({"File": filename, "Status": "✅ Sent (SMTP)", "Envelope ID": envelope_id})
+                                 else: results["failed"] += 1; results["details"].append({"File": filename, "Status": "❌ SMTP Failed", "Error": msg})
 
-                        # 1. Send Envelope
-                        # Note: We generate link ONLY if not using Magic Link logic (which does it later)
-                        # But wait, send_envelope(embedded=True) returns a *short lived* link immediately.
-                        # For Magic Link, we just need the ENVELOPE ID.
-                        # Does send_envelope support returning just ID without link? 
-                        # Currently it generates link if embedded=True.
-                        # We can just ignore the returned link and use the ID.
-                        
-                        signing_url_temp, envelope_id = ds_handler.send_envelope(
-                            rec_email, 
-                            rec_name, 
-                            envelope_docs,
-                            subject=ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name),
-                            body=ds_email_body.replace("{Filename}", filename).replace("{Name}", rec_name).replace("{Signing_Link}", ""),
-                            embedded=not use_docusign_email, # True if we are handling email (SMTP)
-                            cc_emails=cc_list 
-                        )
-                        
-                        if use_docusign_email:
-                            # Done! DocuSign sent the email.
-                            results["sent"] += 1
-                            results["details"].append({"File": filename, "Status": "✅ Sent (DocuSign)", "Envelope ID": envelope_id})
+                        # --- ZOHO SIGN SENDING ---
+                        elif esign_provider == "Zoho Sign":
+                            # Prepare file list
+                            docs_to_send = [(filename, file_data)]
+                            docs_to_send.extend(common_attachments_data)
+                            docs_to_send.extend(current_batch_attachments)
                             
-                        else:
-                            # SMTP Mode + Magic Link
-                            # Construct the Magic Link pointing to THIS app
-                            import urllib.parse
-                            params = {
-                                "action": "sign",
-                                "env_id": envelope_id,
-                                "email": rec_email,
-                                "name": rec_name
-                            }
-                            query_string = urllib.parse.urlencode(params)
-                            magic_link = f"{public_app_url}/?{query_string}"
-                            
-                            # Prepare SMTP Attachments (Review Copies)
-                            smtp_attachments = []
-                            smtp_attachments.append((f"Review_{filename}", file_data))
-                            smtp_attachments.extend(common_attachments_data)
-                            smtp_attachments.extend(current_batch_attachments)
-                            
-                            # Format Link
-                            signing_link_html = f'<a href="{magic_link}" style="background:#0078d4;color:white;padding:10px 20px;text-decoration:none;border-radius:4px;">Click here to sign</a>'
-                            final_body_smtp = ds_email_body.replace("{Name}", rec_name).replace("{Signing_Link}", signing_link_html)
-                            
-                            email_handler = st.session_state.email_handler
-                            success, msg = email_handler.send_personalized_email(
-                                to_email=rec_email, 
-                                subject=ds_email_subject.replace("{Filename}", filename).replace("{Name}", rec_name), 
-                                body=final_body_smtp, 
-                                attachment_filename=None,
-                                attachment_data=None,
-                                cc_emails=cc_list, 
-                                bcc_emails=bcc_list,
-                                additional_attachments=smtp_attachments
+                            success, msg = zoho_handler.send_document_for_signature(
+                                files_list=docs_to_send,
+                                recipient_email=rec_email,
+                                recipient_name=rec_name,
+                                request_name=subject_formatted,
+                                notes=body_formatted # Custom body logic
                             )
                             
                             if success:
                                 results["sent"] += 1
-                                results["details"].append({"File": filename, "Status": "✅ Sent (SMTP)", "Envelope ID": envelope_id})
+                                results["details"].append({"File": filename, "Status": "✅ Sent (Zoho)", "Details": msg})
                             else:
                                 results["failed"] += 1
-                                results["details"].append({"File": filename, "Status": "❌ SMTP Failed", "Error": msg})
+                                results["details"].append({"File": filename, "Status": "❌ Zoho Failed", "Error": msg})
 
                     except Exception as e:
                         results["failed"] += 1
                         results["details"].append({"File": filename, "Status": "❌ Error", "Error": str(e)[:100]})
 
                     if i < total_docs - 1:
-                        import time
-                        time.sleep(1.0 if use_docusign_email else 0.5)
+                        time.sleep(1.0)
                 
             st.session_state.docusign_results = results
             st.rerun()
-
+            
 
 
 
